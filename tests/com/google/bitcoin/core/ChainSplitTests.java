@@ -39,7 +39,7 @@ public class ChainSplitTests {
         wallet = new Wallet(unitTestParams);
         wallet.addKey(new ECKey());
         chain = new BlockChain(unitTestParams, wallet, new MemoryBlockStore(unitTestParams));
-        coinbaseTo = wallet.keychain.get(0).toAddress(unitTestParams);
+        coinbaseTo = wallet.keyStore().getKeyForTransactionChange().toAddress(unitTestParams);
         someOtherGuy = new ECKey().toAddress(unitTestParams);
     }
 

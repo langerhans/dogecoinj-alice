@@ -19,6 +19,8 @@ package com.google.bitcoin.core;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.bitcoin.keystore.*;
+
 import java.io.*;
 import java.math.BigInteger;
 import java.util.*;
@@ -36,7 +38,7 @@ import static com.google.bitcoin.core.Utils.bitcoinValueToFriendlyString;
 public class Wallet implements Serializable {
     private static final Logger log = LoggerFactory.getLogger(Wallet.class);
     private static final long serialVersionUID = 2L;
-
+    
     // Algorithm for movement of transactions between pools. Outbound tx = us spending coins. Inbound tx = us
     // receiving coins. If a tx is both inbound and outbound (spend with change) it is considered outbound for the
     // purposes of the explanation below.
@@ -123,10 +125,15 @@ public class Wallet implements Serializable {
      */
     private Map<Sha256Hash, Transaction> dead;
 
-    /** A list of public/private EC keys owned by this user. */
-    public final ArrayList<ECKey> keychain;
-
     private final NetworkParameters params;
+    
+    /**
+     * The key store is responsible for managing access to private keys.
+     * At a minimum it will provide us access to the public keys that the user 
+     * want to use at this time. Activity requiring access to the private key 
+     * will need to defer to the key store for the operation. This allows two factor 
+     * authentication scenarios as well as shared key stores.*/
+    private KeyStore keyStore;
 
     transient private ArrayList<WalletEventListener> eventListeners;
 
@@ -136,7 +143,6 @@ public class Wallet implements Serializable {
      */
     public Wallet(NetworkParameters params) {
         this.params = params;
-        keychain = new ArrayList<ECKey>();
         unspent = new HashMap<Sha256Hash, Transaction>();
         spent = new HashMap<Sha256Hash, Transaction>();
         inactive = new HashMap<Sha256Hash, Transaction>();
@@ -187,6 +193,11 @@ public class Wallet implements Serializable {
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
         eventListeners = new ArrayList<WalletEventListener>();
+    }
+    
+    public KeyStore keyStore()
+    {
+        return keyStore;
     }
 
     /**
@@ -416,9 +427,9 @@ public class Wallet implements Serializable {
     synchronized Transaction createSend(Address address,  BigInteger nanocoins) {
         // For now let's just pick the first key in our keychain. In future we might want to do something else to
         // give the user better privacy here, eg in incognito mode.
-        assert keychain.size() > 0 : "Can't send value without an address to use for receiving change";
-        ECKey first = keychain.get(0);
-        return createSend(address, nanocoins, first.toAddress(params));
+        StoredKey changeKey = keyStore.getKeyForTransactionChange();
+        assert changeKey != null : "Can't send value without an address to use for receiving change";
+        return createSend(address, nanocoins, changeKey.toAddress(params));
     }
 
     /**
@@ -506,41 +517,7 @@ public class Wallet implements Serializable {
      * Adds the given ECKey to the wallet. There is currently no way to delete keys (that would result in coin loss).
      */
     public synchronized void addKey(ECKey key) {
-        assert !keychain.contains(key);
-        keychain.add(key);
-    }
-
-    /**
-     * Locates a keypair from the keychain given the hash of the public key. This is needed when finding out which
-     * key we need to use to redeem a transaction output.
-     * @return ECKey object or null if no such key was found.
-     */
-    public synchronized ECKey findKeyFromPubHash(byte[] pubkeyHash) {
-        for (ECKey key : keychain) {
-            if (Arrays.equals(key.getPubKeyHash(), pubkeyHash)) return key;
-        }
-        return null;
-    }
-
-    /** Returns true if this wallet contains a public key which hashes to the given hash. */
-    public synchronized boolean isPubKeyHashMine(byte[] pubkeyHash) {
-        return findKeyFromPubHash(pubkeyHash) != null;
-    }
-
-    /**
-     * Locates a keypair from the keychain given the raw public key bytes.
-     * @return ECKey or null if no such key was found.
-     */
-    public synchronized ECKey findKeyFromPubKey(byte[] pubkey) {
-        for (ECKey key : keychain) {
-            if (Arrays.equals(key.getPubKey(), pubkey)) return key;
-        }
-        return null;
-    }
-
-    /** Returns true if this wallet contains a keypair with the given public key. */
-    public synchronized boolean isPubKeyMine(byte[] pubkey) {
-        return findKeyFromPubKey(pubkey) != null;
+        keyStore.addKey(key);
     }
 
     /**
@@ -615,7 +592,7 @@ public class Wallet implements Serializable {
         builder.append(String.format("  %d dead transactions\n", dead.size()));
         // Do the keys.
         builder.append("\nKeys:\n");
-        for (ECKey key : keychain) {
+        for (StoredKey key : keyStore.Keys()) {
             builder.append("  addr:");
             builder.append(key.toAddress(params));
             builder.append(" ");

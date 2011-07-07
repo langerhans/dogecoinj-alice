@@ -140,7 +140,7 @@ public class TransactionOutput extends Message implements Serializable {
     public boolean isMine(Wallet wallet) {
         try {
             byte[] pubkeyHash = getScriptPubKey().getPubKeyHash();
-            return wallet.isPubKeyHashMine(pubkeyHash);
+            return wallet.keyStore().isPubKeyHashMine(pubkeyHash);
         } catch (ScriptException e) {
             log.error("Could not parse tx output script: {}", e.toString());
             return false;

@@ -26,6 +26,7 @@ import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 import static com.google.bitcoin.core.Utils.*;
 
 /**
@@ -337,7 +338,7 @@ public class Transaction extends Message implements Serializable {
         // to figure out which key to sign with.
 
         byte[][] signatures = new byte[inputs.size()][];
-        ECKey[] signingKeys = new ECKey[inputs.size()];
+        StoredKey[] signingKeys = new StoredKey[inputs.size()];
         for (int i = 0; i < inputs.size(); i++) {
             TransactionInput input = inputs.get(i);
             assert input.scriptBytes.length == 0 : "Attempting to sign a non-fresh transaction";
@@ -345,7 +346,7 @@ public class Transaction extends Message implements Serializable {
             input.scriptBytes = input.outpoint.getConnectedPubKeyScript();
             // Find the signing key we'll need to use.
             byte[] connectedPubKeyHash = input.outpoint.getConnectedPubKeyHash();
-            ECKey key = wallet.findKeyFromPubHash(connectedPubKeyHash);
+            StoredKey key = wallet.keyStore().findKeyFromPubHash(connectedPubKeyHash);
             // This assert should never fire. If it does, it means the wallet is inconsistent.
             assert key != null : "Transaction exists in wallet that we cannot redeem: " + Utils.bytesToHexString(connectedPubKeyHash);
             // Keep the key around for the script creation step below.
@@ -360,7 +361,7 @@ public class Transaction extends Message implements Serializable {
             // and then put the resulting signature in the script along with the public key (below).
             try {
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                bos.write(key.sign(hash));
+                bos.write(key.getKeyStore().sign(hash, key));
                 bos.write((hashType.ordinal() + 1) | (anyoneCanPay ? 0x80 : 0)) ;
                 signatures[i] = bos.toByteArray();
             } catch (IOException e) {
@@ -374,7 +375,7 @@ public class Transaction extends Message implements Serializable {
         for (int i = 0; i < inputs.size(); i++) {
             TransactionInput input = inputs.get(i);
             assert input.scriptBytes.length == 0;
-            ECKey key = signingKeys[i];
+            StoredKey key = signingKeys[i];
             input.scriptBytes = Script.createInputScript(signatures[i], key.getPubKey());
         }
 

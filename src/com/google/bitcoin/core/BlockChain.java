@@ -399,7 +399,7 @@ public class BlockChain {
             for (TransactionInput i : tx.inputs) {
                 byte[] pubkey = i.getScriptSig().getPubKey();
                 // This is not thread safe as a key could be removed between the call to isPubKeyMine and receive.
-                if (wallet.isPubKeyMine(pubkey)) {
+                if (wallet.keyStore().isPubKeyMine(pubkey)) {
                     shouldReceive = true;
                 }
             }

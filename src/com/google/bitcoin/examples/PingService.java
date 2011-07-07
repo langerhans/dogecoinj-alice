@@ -63,11 +63,11 @@ public class PingService {
             wallet = Wallet.loadFromFile(walletFile);
         } catch (IOException e) {
             wallet = new Wallet(params);
-            wallet.keychain.add(new ECKey());
+            wallet.keyStore().addKey(new ECKey());
             wallet.saveToFile(walletFile);
         }
         // Fetch the first key in the wallet (should be the only key).
-        ECKey key = wallet.keychain.get(0);
+        StoredKey key = wallet.keyStore().getKeyForTransactionChange();
 
         // Load the block chain, if there is one stored locally.
         System.out.println("Reading block store from disk");

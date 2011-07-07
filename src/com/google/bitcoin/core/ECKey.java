@@ -45,7 +45,7 @@ import com.google.bitcoin.bouncycastle.crypto.signers.ECDSASigner;
  * Bouncy Castle is used. In future this may become an interface with multiple implementations using different crypto
  * libraries. The class also provides a static method that can verify a signature with just the public key.<p>
  */
-public class ECKey implements Serializable {
+public class ECKey extends StoredKey implements Serializable {
     private static final ECDomainParameters ecParams;
 
     private static final SecureRandom secureRandom;
@@ -59,9 +59,9 @@ public class ECKey implements Serializable {
     }
 
     private final BigInteger priv;
-    private final byte[] pub;
+    /*private final byte[] pub;*/
     
-    transient private byte[] pubKeyHash;
+    //transient private byte[] pubKeyHash;
 
     /** Generates an entirely new keypair. */
     public ECKey() {
@@ -126,35 +126,12 @@ public class ECKey implements Serializable {
         return ecParams.getG().multiply(privKey).getEncoded();
     }
 
-    /** Gets the hash160 form of the public key (as seen in addresses). */
-    public byte[] getPubKeyHash() {
-        if (pubKeyHash == null)
-            pubKeyHash = Utils.sha256hash160(this.pub);
-        return pubKeyHash;
-    }
-
-    /**
-     * Gets the raw public key value. This appears in transaction scriptSigs. Note that this is <b>not</b> the same
-     * as the pubKeyHash/address.
-     */
-    public byte[] getPubKey() {
-        return pub;
-    }
-
+    @Override
     public String toString() {
         StringBuffer b = new StringBuffer();
         b.append("pub:").append(Utils.bytesToHexString(pub));
         b.append(" priv:").append(Utils.bytesToHexString(priv.toByteArray()));
         return b.toString();
-    }
-
-    /**
-     * Returns the address that corresponds to the public part of this ECKey. Note that an address is derived from
-     * the RIPEMD-160 hash of the public key and is not the public key itself (which is too large to be convenient).
-     */
-    public Address toAddress(NetworkParameters params) {
-        byte[] hash160 = Utils.sha256hash160(pub);
-        return new Address(params, hash160);
     }
 
     /**
@@ -202,16 +179,6 @@ public class ECKey implements Serializable {
             throw new RuntimeException(e);
         }
     }
-
-    /**
-     * Verifies the given ASN.1 encoded ECDSA signature against a hash using the public key.
-     * @param data Hash of the data to verify.
-     * @param signature ASN.1 encoded signature.
-     */
-    public boolean verify(byte[] data, byte[] signature) {
-        return ECKey.verify(data, signature, pub);
-    }
-
 
     private static BigInteger extractPrivateKeyFromASN1(byte[] asn1privkey) {
         // To understand this code, see the definition of the ASN.1 format for EC private keys in the OpenSSL source
