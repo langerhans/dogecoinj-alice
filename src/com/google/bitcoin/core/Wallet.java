@@ -19,8 +19,6 @@ package com.google.bitcoin.core;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.bitcoin.keystore.*;
-
 import java.io.*;
 import java.math.BigInteger;
 import java.util.*;
@@ -38,7 +36,7 @@ import static com.google.bitcoin.core.Utils.bitcoinValueToFriendlyString;
 public class Wallet implements Serializable {
     private static final Logger log = LoggerFactory.getLogger(Wallet.class);
     private static final long serialVersionUID = 2L;
-    
+
     // Algorithm for movement of transactions between pools. Outbound tx = us spending coins. Inbound tx = us
     // receiving coins. If a tx is both inbound and outbound (spend with change) it is considered outbound for the
     // purposes of the explanation below.
@@ -125,15 +123,12 @@ public class Wallet implements Serializable {
      */
     private Map<Sha256Hash, Transaction> dead;
 
-    private final NetworkParameters params;
+    /** A list of public/private EC keys owned by this user. */
+    //public final ArrayList<ECKey> keychain;
     
-    /**
-     * The key store is responsible for managing access to private keys.
-     * At a minimum it will provide us access to the public keys that the user 
-     * want to use at this time. Activity requiring access to the private key 
-     * will need to defer to the key store for the operation. This allows two factor 
-     * authentication scenarios as well as shared key stores.*/
-    private KeyStore keyStore;
+    private transient KeyStore keyStore;
+
+    private final NetworkParameters params;
 
     transient private ArrayList<WalletEventListener> eventListeners;
 
@@ -141,8 +136,9 @@ public class Wallet implements Serializable {
      * Creates a new, empty wallet with no keys and no transactions. If you want to restore a wallet from disk instead,
      * see loadFromFile.
      */
-    public Wallet(NetworkParameters params) {
+    public Wallet(NetworkParameters params, KeyStore keyStore) {
         this.params = params;
+        this.keyStore = keyStore;
         unspent = new HashMap<Sha256Hash, Transaction>();
         spent = new HashMap<Sha256Hash, Transaction>();
         inactive = new HashMap<Sha256Hash, Transaction>();
@@ -171,18 +167,20 @@ public class Wallet implements Serializable {
     /**
      * Returns a wallet deserialized from the given file.
      */
-    public static Wallet loadFromFile(File f) throws IOException {
-        return loadFromFileStream(new FileInputStream(f));
+    public static Wallet loadFromFile(File f, KeyStore keyStore) throws IOException {
+        return loadFromFileStream(new FileInputStream(f), keyStore);
     }
 
     /**
      * Returns a wallet deserialied from the given file input stream.
      */
-    public static Wallet loadFromFileStream(FileInputStream f) throws IOException {
+    public static Wallet loadFromFileStream(FileInputStream f, KeyStore keyStore) throws IOException {
         ObjectInputStream ois = null;
         try {
             ois = new ObjectInputStream(f);
-            return (Wallet) ois.readObject();
+            Wallet wallet = (Wallet) ois.readObject();
+            wallet.setKeyStore(keyStore);
+            return wallet;
         } catch (ClassNotFoundException e) {
             throw new RuntimeException(e);
         } finally {
@@ -195,8 +193,7 @@ public class Wallet implements Serializable {
         eventListeners = new ArrayList<WalletEventListener>();
     }
     
-    public KeyStore keyStore()
-    {
+    public KeyStore getKeyStore() {
         return keyStore;
     }
 
@@ -349,7 +346,10 @@ public class Wallet implements Serializable {
                 //   A  -> spent by B [pending]
                 //     \-> spent by C [chain]
                 Transaction doubleSpent = input.outpoint.fromTx;   // == A
-                Transaction connected = doubleSpent.outputs.get((int)input.outpoint.index).getSpentBy().parentTransaction;
+                int index = (int) input.outpoint.index;
+                TransactionOutput output = doubleSpent.outputs.get(index);
+                TransactionInput spentBy = output.getSpentBy();
+                Transaction connected = spentBy.parentTransaction;
                 if (pending.containsKey(connected.getHash())) {
                     log.info("Saw double spend from chain override pending tx {}", connected.getHashAsString());
                     log.info("  <-pending ->dead");
@@ -394,6 +394,14 @@ public class Wallet implements Serializable {
     }
 
     /**
+     * Removes the given event listener object. Returns true if the listener was removed,
+     * false if that listener was never added.
+     */
+    public synchronized boolean removeEventListener(WalletEventListener listener) {
+        return eventListeners.remove(listener);
+    }
+
+    /**
      * Call this when we have successfully transmitted the send tx to the network, to update the wallet.
      */
     synchronized void confirmSend(Transaction tx) {
@@ -427,24 +435,51 @@ public class Wallet implements Serializable {
     synchronized Transaction createSend(Address address,  BigInteger nanocoins) {
         // For now let's just pick the first key in our keychain. In future we might want to do something else to
         // give the user better privacy here, eg in incognito mode.
-        StoredKey changeKey = keyStore.getKeyForTransactionChange();
-        assert changeKey != null : "Can't send value without an address to use for receiving change";
-        return createSend(address, nanocoins, changeKey.toAddress(params));
+        StoredKey[] keys = keyStore.getKeys();
+        assert keys.length > 0 : "Can't send value without an address to use for receiving change";
+        StoredKey first = keys[0];
+        return createSend(address, nanocoins, first.toAddress(params));
     }
 
     /**
-     * Sends coins to the given address, via the given {@link Peer}. Change is returned to the first key in the wallet.
+     * Sends coins to the given address, via the given {@link PeerGroup}.
+     * Change is returned to the first key in the wallet.
+     * 
      * @param to Which address to send coins to.
      * @param nanocoins How many nanocoins to send. You can use Utils.toNanoCoins() to calculate this.
      * @return The {@link Transaction} that was created or null if there was insufficient balance to send the coins.
      * @throws IOException if there was a problem broadcasting the transaction
      */
-    public synchronized Transaction sendCoins(Peer peer, Address to, BigInteger nanocoins) throws IOException {
+    public synchronized Transaction sendCoins(PeerGroup peerGroup, Address to, BigInteger nanocoins) throws IOException {
+        Transaction tx = createSend(to, nanocoins);
+        if (tx == null)   // Not enough money! :-(
+            return null;
+        if (!peerGroup.broadcastTransaction(tx)) {
+            throw new IOException("Failed to broadcast tx to all connected peers");
+        }
+        
+        // TODO - retry logic
+        confirmSend(tx);
+        return tx;
+    }
+
+    /**
+     * Sends coins to the given address, via the given {@link Peer}.
+     * Change is returned to the first key in the wallet.
+     * 
+     * @param to Which address to send coins to.
+     * @param nanocoins How many nanocoins to send. You can use Utils.toNanoCoins() to calculate this.
+     * @return The {@link Transaction} that was created or null if there was insufficient balance to send the coins.
+     * @throws IOException if there was a problem broadcasting the transaction
+     */
+    public synchronized Transaction sendCoins(Peer peer, Address to, BigInteger nanocoins)
+        throws IOException {
         Transaction tx = createSend(to, nanocoins);
         if (tx == null)   // Not enough money! :-(
             return null;
         peer.broadcastTransaction(tx);
         confirmSend(tx);
+
         return tx;
     }
 
@@ -511,13 +546,6 @@ public class Wallet implements Serializable {
         }
         log.info("  created {}", sendTx.getHashAsString());
         return sendTx;
-    }
-
-    /**
-     * Adds the given ECKey to the wallet. There is currently no way to delete keys (that would result in coin loss).
-     */
-    public synchronized void addKey(ECKey key) {
-        keyStore.addKey(key);
     }
 
     /**
@@ -592,7 +620,7 @@ public class Wallet implements Serializable {
         builder.append(String.format("  %d dead transactions\n", dead.size()));
         // Do the keys.
         builder.append("\nKeys:\n");
-        for (StoredKey key : keyStore.Keys()) {
+        for (StoredKey key : keyStore.getKeys()) {
             builder.append("  addr:");
             builder.append(key.toAddress(params));
             builder.append(" ");
@@ -709,7 +737,7 @@ public class Wallet implements Serializable {
             tx.disconnectInputs();
         // Reconnect the transactions in the common part of the chain.
         for (Transaction tx : commonChainTransactions.values()) {
-            TransactionInput badInput = tx.connectInputs(all, false);
+            TransactionInput badInput = tx.connectForReorganize(all);
             assert badInput == null : "Failed to connect " + tx.getHashAsString() + ", " + badInput.toString();
         }
         // Recalculate the unspent/spent buckets for the transactions the re-org did not affect.
@@ -847,5 +875,9 @@ public class Wallet implements Serializable {
      */
     public Collection<Transaction> getPendingTransactions() {
         return Collections.unmodifiableCollection(pending.values());
+    }
+    
+    private void setKeyStore(KeyStore keyStore) {
+        this.keyStore = keyStore;
     }
 }

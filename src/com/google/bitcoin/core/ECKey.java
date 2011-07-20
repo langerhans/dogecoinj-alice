@@ -59,9 +59,7 @@ public class ECKey extends StoredKey implements Serializable {
     }
 
     private final BigInteger priv;
-    /*private final byte[] pub;*/
-    
-    //transient private byte[] pubKeyHash;
+    protected byte[] pub;
 
     /** Generates an entirely new keypair. */
     public ECKey() {
@@ -202,5 +200,14 @@ public class ECKey extends StoredKey implements Serializable {
         } catch (IOException e) {
             throw new RuntimeException(e);  // Cannot happen, reading from memory stream.
         }
+    }
+
+    public BigInteger getPrivateKey() {
+        return priv;
+    }
+
+    @Override
+    public byte[] getPubKey() {
+        return pub;
     }
 }

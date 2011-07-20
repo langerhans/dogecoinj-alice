@@ -1,5 +1,5 @@
 /**
- * Copyright 2011 Noa Resare
+ * Copyright 2011 Google Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,20 @@
 
 package com.google.bitcoin.core;
 
-public class Ping extends Message {
+/**
+ * Convenience abstract class for implmenting a PeerEventListener.
+ * 
+ * <p>The default method implementations do nothing.
+ * 
+ * @author miron@google.com (Miron Cuperman)
+ *
+ */
+public class AbstractPeerEventListener extends Object implements PeerEventListener {
     @Override
-    void parse() throws ProtocolException {
-        // nothing to parse
+    public void onBlocksDownloaded(Peer peer, Block block, int blocksLeft) {
+    }
+
+    @Override
+    public void onChainDownloadStarted(Peer peer, int blocksLeft) {
     }
 }

@@ -83,7 +83,7 @@ public class NetworkParameters implements Serializable {
             Script.writeBytes(scriptPubKeyBytes, Hex.decode
                             ("04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f"));
             scriptPubKeyBytes.write(Script.OP_CHECKSIG);
-            t.outputs.add(new TransactionOutput(n, scriptPubKeyBytes.toByteArray()));
+            t.outputs.add(new TransactionOutput(n, t, scriptPubKeyBytes.toByteArray()));
         } catch (Exception e) {
             // Cannot happen.
         }
@@ -111,7 +111,7 @@ public class NetworkParameters implements Serializable {
         n.genesisBlock.setDifficultyTarget(0x1d07fff8L);
         n.genesisBlock.setNonce(384568319);
         String genesisHash = n.genesisBlock.getHashAsString();
-        assert genesisHash.equals("00000007199508e34a9ff81e6ec0c477a4cccff2a4767a8eee39c11db367b008");
+        assert genesisHash.equals("00000007199508e34a9ff81e6ec0c477a4cccff2a4767a8eee39c11db367b008") : genesisHash;
         return n;
     }
 

@@ -33,7 +33,7 @@ import static com.google.bitcoin.core.Utils.*;
  * over its contents. See the BitCoin technical paper for more detail on blocks.<p>
  *
  * To get a block, you can either build one from the raw bytes you can get from another implementation,
- * or request one specifically using {@link Peer#getBlock(byte[])}, or grab one from a downloaded {@link BlockChain}.
+ * or request one specifically using {@link Peer#getBlock(Sha256Hash)}, or grab one from a downloaded {@link BlockChain}.
  */
 public class Block extends Message {
     private static final Logger log = LoggerFactory.getLogger(Block.class);
@@ -49,12 +49,13 @@ public class Block extends Message {
 
     // For unit testing. If not zero, use this instead of the current time.
     static long fakeClock = 0;
+
+    // Fields defined as part of the protocol format.
     private long version;
     private Sha256Hash prevBlockHash;
     private Sha256Hash merkleRoot;
     private long time;
     private long difficultyTarget;  // "nBits"
-
     private long nonce;
 
     /** If null, it means this object holds only the headers. */
@@ -62,7 +63,7 @@ public class Block extends Message {
     /** Stores the hash of the block. If null, getHash() will recalculate it. */
     private transient Sha256Hash hash;
 
-    /** Special case constructor, used for the genesis node and unit tests. */
+    /** Special case constructor, used for the genesis node, cloneAsHeader and unit tests. */
     Block(NetworkParameters params) {
         super(params);
         // Set up a few basic things. We are not complete after this though.
@@ -169,14 +170,16 @@ public class Block extends Message {
 
     /** Returns a copy of the block, but without any transactions. */
     public Block cloneAsHeader() {
-        try {
-            Block block = new Block(params, bitcoinSerialize());
-            block.transactions = null;
-            return block;
-        } catch (ProtocolException e) {
-            // Should not be able to happen unless our state is internally inconsistent.
-            throw new RuntimeException(e);
-        }
+        Block block = new Block(params);
+        block.nonce = nonce;
+        block.prevBlockHash = prevBlockHash.clone();
+        block.merkleRoot = getMerkleRoot().clone();
+        block.version = version;
+        block.time = time;
+        block.difficultyTarget = difficultyTarget;
+        block.transactions = null;
+        block.hash = getHash().clone();
+        return block;
     }
 
     /**
@@ -345,13 +348,13 @@ public class Block extends Message {
 
     /**
      * Checks the block data to ensure it follows the rules laid out in the network parameters. Specifically, throws
-     * an exception if the proof of work is invalid, if the timestamp is too far from what it should be, or if the
-     * transactions don't hash to the value in the merkle root field. This is <b>not</b> everything that is required
-     * for a block to be valid, only what is checkable independent of the chain.
+     * an exception if the proof of work is invalid, or if the timestamp is too far from what it should be. This is
+     * <b>not</b> everything that is required for a block to be valid, only what is checkable independent of the
+     * chain and without a transaction index.
      *
      * @throws VerificationException
      */
-    public void verify() throws VerificationException {
+    public void verifyHeader() throws VerificationException {
         // Prove that this block is OK. It might seem that we can just ignore most of these checks given that the
         // network is also verifying the blocks, but we cannot as it'd open us to a variety of obscure attacks.
         //
@@ -359,15 +362,28 @@ public class Block extends Message {
         // enough, it's probably been done by the network.
         checkProofOfWork(true);
         checkTimestamp();
+    }
+
+    /**
+     * Checks the block contents
+     * @throws VerificationException
+     */
+    public void verifyTransactions() throws VerificationException {
         // Now we need to check that the body of the block actually matches the headers. The network won't generate
         // an invalid block, but if we didn't validate this then an untrusted man-in-the-middle could obtain the next
         // valid block from the network and simply replace the transactions in it with their own fictional
         // transactions that reference spent or non-existant inputs.
-        if (transactions != null) {
-            assert transactions.size() > 0;
-            checkTransactions();
-            checkMerkleRoot();
-        }
+        assert transactions.size() > 0;
+        checkTransactions();
+        checkMerkleRoot();
+    }
+
+    /**
+     * Verifies both the header and that the transactions hash to the merkle root.
+     */
+    public void verify() throws VerificationException {
+        verifyHeader();
+        verifyTransactions();
     }
 
     @Override
@@ -461,33 +477,49 @@ public class Block extends Message {
     /////////////////////////////////////////////////////////////////////////////////////////////////
     // Unit testing related methods.
 
-    static private int coinbaseCounter;
+    // Used to make transactions unique.
+    static private int txCounter;
+
     /** Adds a coinbase transaction to the block. This exists for unit tests. */
-    void addCoinbaseTransaction(Address to) {
+    void addCoinbaseTransaction(byte[] pubKeyTo) {
         transactions = new ArrayList<Transaction>();
         Transaction coinbase = new Transaction(params);
         // A real coinbase transaction has some stuff in the scriptSig like the extraNonce and difficulty. The
         // transactions are distinguished by every TX output going to a different key.
         //
         // Here we will do things a bit differently so a new address isn't needed every time. We'll put a simple
-        // counter in the scriptSig so every transaction has a different hash. The output is also different.
-        // Real coinbase transactions use <pubkey> OP_CHECKSIG rather than a send to an address though there's
-        // nothing in the system that enforces that and both are just as valid.
-        coinbase.inputs.add(new TransactionInput(params, coinbase, new byte[] { (byte) coinbaseCounter++ } ));
-        coinbase.outputs.add(new TransactionOutput(params, coinbase, Utils.toNanoCoins(50, 0), to));
+        // counter in the scriptSig so every transaction has a different hash.
+        coinbase.inputs.add(new TransactionInput(params, coinbase, new byte[] { (byte) txCounter++ } ));
+        coinbase.outputs.add(new TransactionOutput(params, coinbase, Script.createOutputScript(pubKeyTo)));
         transactions.add(coinbase);
     }
+
+    static final byte[] EMPTY_BYTES = new byte[32];
 
     /** Returns a solved block that builds on top of this one. This exists for unit tests. */
     Block createNextBlock(Address to, long time) {
         Block b = new Block(params);
         b.setDifficultyTarget(difficultyTarget);
-        b.addCoinbaseTransaction(to);
+        b.addCoinbaseTransaction(EMPTY_BYTES);
+
+        // Add a transaction paying 50 coins to the "to" address.
+        Transaction t = new Transaction(params);
+        t.addOutput(new TransactionOutput(params, t, Utils.toNanoCoins(50, 0), to));
+        // The input does not really need to be a valid signature, as long as it has the right general form.
+        TransactionInput input = new TransactionInput(params, t, Script.createInputScript(EMPTY_BYTES, EMPTY_BYTES));
+        // Importantly the outpoint hash cannot be zero as that's how we detect a coinbase transaction in isolation
+        // but it must be unique to avoid 'different' transactions looking the same.
+        byte[] counter = new byte[32];
+        counter[0] = (byte) txCounter++;
+        input.outpoint.hash = new Sha256Hash(counter);
+        t.addInput(input);
+        b.addTransaction(t);
+
         b.setPrevBlockHash(getHash());
         b.setTime(time);
         b.solve();
         try {
-            b.verify();
+            b.verifyHeader();
         } catch (VerificationException e) {
             throw new RuntimeException(e);  // Cannot happen.
         }

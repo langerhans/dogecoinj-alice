@@ -1,37 +1,25 @@
 package com.google.bitcoin.core;
 
-import com.google.bitcoin.keystore.KeyStore;
-
-public class StoredKey {
-    
-    private KeyStore keyStore;
-    
-    protected byte[] pub;
-    protected byte[] pubKeyHash;
-    
-    public KeyStore getKeyStore()
-    {
-        return keyStore;
-    }
+public abstract class StoredKey {
+        
+    protected transient byte[] pubKeyHash;
     
     /** Gets the hash160 form of the public key (as seen in addresses). */
     public byte[] getPubKeyHash() {
         if (pubKeyHash == null)
-            pubKeyHash = Utils.sha256hash160(this.pub);
+            pubKeyHash = Utils.sha256hash160(this.getPubKey());
         return pubKeyHash;
     }
     
     /**
      * Gets the raw public key value. This appears in transaction scriptSigs. Note that this is <b>not</b> the same
      * as the pubKeyHash/address.
-     */
-    public byte[] getPubKey() {
-        return pub;
-    }
+     */    
+    public abstract byte[] getPubKey();
     
     public String toString() {
         StringBuffer b = new StringBuffer();
-        b.append("pub:").append(Utils.bytesToHexString(pub));
+        b.append("pub:").append(Utils.bytesToHexString(getPubKey()));
         return b.toString();
     }
     
@@ -40,7 +28,7 @@ public class StoredKey {
      * the RIPEMD-160 hash of the public key and is not the public key itself (which is too large to be convenient).
      */
     public Address toAddress(NetworkParameters params) {
-        byte[] hash160 = Utils.sha256hash160(pub);
+        byte[] hash160 = Utils.sha256hash160(getPubKey());
         return new Address(params, hash160);
     }
     
@@ -50,6 +38,6 @@ public class StoredKey {
      * @param signature ASN.1 encoded signature.
      */
     public boolean verify(byte[] data, byte[] signature) {
-        return ECKey.verify(data, signature, pub);
+        return ECKey.verify(data, signature, getPubKey());
     }
 }

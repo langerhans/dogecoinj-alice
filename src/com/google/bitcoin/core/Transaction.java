@@ -26,7 +26,6 @@ import java.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
 import static com.google.bitcoin.core.Utils.*;
 
 /**
@@ -105,10 +104,6 @@ public class Transaction extends Message implements Serializable {
         return getHash().toString();
     }
 
-    void setFakeHashForTesting(Sha256Hash hash) {
-        this.hash = hash;
-    }
-
     /**
      * Calculates the sum of the outputs that are sending coins to a key in the wallet. The flag controls whether to
      * include spent outputs or not.
@@ -171,6 +166,10 @@ public class Transaction extends Message implements Serializable {
                 connected = input.getConnectedOutput(wallet.pending);
             if (connected == null)
                 continue;
+            // The connected output may be the change to the sender of a previous input sent to this wallet. In this
+            // case we ignore it.
+            if (!connected.isMine(wallet))
+                continue;
             v = v.add(connected.getValue());
         }
         return v;
@@ -188,14 +187,19 @@ public class Transaction extends Message implements Serializable {
      * Connects all inputs using the provided transactions. If any input cannot be connected returns that input or
      * null on success.
      */
-    TransactionInput connectInputs(Map<Sha256Hash, Transaction> transactions, boolean disconnect) {
+    TransactionInput connectForReorganize(Map<Sha256Hash, Transaction> transactions) {
         for (TransactionInput input : inputs) {
             // Coinbase transactions, by definition, do not have connectable inputs.
             if (input.isCoinBase()) continue;
-            if (input.connect(transactions, disconnect) != TransactionInput.ConnectionResult.SUCCESS) {
-                // Could not connect this input, so return it and abort.
-                return input;
-            }
+            TransactionInput.ConnectionResult result = input.connect(transactions, false);
+            // Connected to another tx in the wallet?
+            if (result == TransactionInput.ConnectionResult.SUCCESS)
+                continue;
+            // The input doesn't exist in the wallet, eg because it belongs to somebody else (inbound spend).
+            if (result == TransactionInput.ConnectionResult.NO_SUCH_TX)
+                continue;
+            // Could not connect this input, so return it and abort.
+            return input;
         }
         return null;
     }
@@ -233,9 +237,6 @@ public class Transaction extends Message implements Serializable {
             cursor += output.getMessageSize();
         }
         lockTime = readUint32();
-        
-        // Store a hash, it may come in useful later (want to avoid reserialization costs).
-        hash = new Sha256Hash(reverseBytes(doubleDigest(bytes, offset, cursor - offset)));
     }
 
     /**
@@ -301,7 +302,12 @@ public class Transaction extends Message implements Serializable {
      * accepted by the network.
      */
     public void addInput(TransactionOutput from) {
-        inputs.add(new TransactionInput(params, this, from));
+        addInput(new TransactionInput(params, this, from));
+    }
+
+    /** Adds an input directly, with no checking that it's valid. */
+    public void addInput(TransactionInput input) {
+        inputs.add(input);
     }
 
     /**
@@ -338,7 +344,7 @@ public class Transaction extends Message implements Serializable {
         // to figure out which key to sign with.
 
         byte[][] signatures = new byte[inputs.size()][];
-        StoredKey[] signingKeys = new StoredKey[inputs.size()];
+        StoredKey[] signingKeys = new ECKey[inputs.size()];
         for (int i = 0; i < inputs.size(); i++) {
             TransactionInput input = inputs.get(i);
             assert input.scriptBytes.length == 0 : "Attempting to sign a non-fresh transaction";
@@ -346,7 +352,7 @@ public class Transaction extends Message implements Serializable {
             input.scriptBytes = input.outpoint.getConnectedPubKeyScript();
             // Find the signing key we'll need to use.
             byte[] connectedPubKeyHash = input.outpoint.getConnectedPubKeyHash();
-            StoredKey key = wallet.keyStore().findKeyFromPubHash(connectedPubKeyHash);
+            StoredKey key = wallet.getKeyStore().findKeyFromPubHash(connectedPubKeyHash);
             // This assert should never fire. If it does, it means the wallet is inconsistent.
             assert key != null : "Transaction exists in wallet that we cannot redeem: " + Utils.bytesToHexString(connectedPubKeyHash);
             // Keep the key around for the script creation step below.
@@ -361,7 +367,7 @@ public class Transaction extends Message implements Serializable {
             // and then put the resulting signature in the script along with the public key (below).
             try {
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                bos.write(key.getKeyStore().sign(hash, key));
+                bos.write(wallet.getKeyStore().sign(hash, key));
                 bos.write((hashType.ordinal() + 1) | (anyoneCanPay ? 0x80 : 0)) ;
                 signatures[i] = bos.toByteArray();
             } catch (IOException e) {
