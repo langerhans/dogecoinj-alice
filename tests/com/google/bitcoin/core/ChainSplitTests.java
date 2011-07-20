@@ -16,6 +16,7 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.keystore.MemoryKeyStore;
 import com.google.bitcoin.store.MemoryBlockStore;
 import org.junit.Before;
 import org.junit.Test;
@@ -36,10 +37,10 @@ public class ChainSplitTests {
     @Before
     public void setUp() {
         unitTestParams = NetworkParameters.unitTests();
-        wallet = new Wallet(unitTestParams);
-        wallet.addKey(new ECKey());
+        wallet = new Wallet(unitTestParams, new MemoryKeyStore());
+        ((MemoryKeyStore)wallet.getKeyStore()).addKey(new ECKey());
         chain = new BlockChain(unitTestParams, wallet, new MemoryBlockStore(unitTestParams));
-        coinbaseTo = wallet.keyStore().getKeyForTransactionChange().toAddress(unitTestParams);
+        coinbaseTo = wallet.getKeyStore().getKeys()[0].toAddress(unitTestParams);
         someOtherGuy = new ECKey().toAddress(unitTestParams);
     }
 
