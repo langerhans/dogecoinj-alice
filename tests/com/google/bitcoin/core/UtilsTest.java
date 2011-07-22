@@ -18,10 +18,17 @@ package com.google.bitcoin.core;
 
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.fail;
+import static org.junit.Assert.assertArrayEquals;
+
+import java.security.SecureRandom;
 
 import static com.google.bitcoin.core.Utils.*;
 
 import org.junit.Test;
+
+import com.google.bitcoin.bouncycastle.crypto.DataLengthException;
+import com.google.bitcoin.bouncycastle.crypto.InvalidCipherTextException;
+
 
 public class UtilsTest {
 
@@ -50,5 +57,55 @@ public class UtilsTest {
     public void testFormatting() {
         assertEquals("1.23", bitcoinValueToFriendlyString(toNanoCoins(1, 23)));
         assertEquals("-1.23", bitcoinValueToFriendlyString(toNanoCoins(1, 23).negate()));
+    }
+    
+    @Test
+    public void testAES() {
+        //256 bit encryption requires 32 byte key.
+        byte[] key = new byte[32];
+        SecureRandom rnd = new SecureRandom();
+        rnd.nextBytes(key);
+        
+        //Use an oddball size for testing
+        byte[] origData = new byte[300];
+        rnd.nextBytes(origData);
+        
+        java.util.Arrays.copyOf(origData, origData.length);
+        
+        byte[] encrypted = Utils.aes256(origData, key, true);
+        byte[] decrypted = Utils.aes256(encrypted, key, false);
+        assertArrayEquals(origData, decrypted);
+        
+        //Now try a length less than the block size.
+        origData = new byte[10];
+        rnd.nextBytes(origData);
+        encrypted = Utils.aes256(origData, key, true);
+        decrypted = Utils.aes256(encrypted, key, false);
+        assertArrayEquals(origData, decrypted);
+     
+    }
+    
+    @Test
+    public void testAESStringKey() {
+        
+        String key = "aes short key !(&%^";
+        
+        SecureRandom rnd = new SecureRandom();
+        //Use an oddball size for testing
+        byte[] origData = new byte[476];
+        rnd.nextBytes(origData);
+        
+        java.util.Arrays.copyOf(origData, origData.length);
+        
+        byte[] encrypted = Utils.aes256(origData, key, true);
+        byte[] decrypted = Utils.aes256(encrypted, key, false);
+        assertArrayEquals(origData, decrypted);
+        
+        //Now try a length less than the block size.
+        origData = new byte[10];
+        rnd.nextBytes(origData);
+        encrypted = Utils.aes256(origData, key, true);
+        decrypted = Utils.aes256(encrypted, key, false);
+        assertArrayEquals(origData, decrypted);
     }
 }

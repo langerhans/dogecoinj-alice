@@ -16,7 +16,17 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.bouncycastle.crypto.BufferedBlockCipher;
+import com.google.bitcoin.bouncycastle.crypto.DataLengthException;
+import com.google.bitcoin.bouncycastle.crypto.InvalidCipherTextException;
+import com.google.bitcoin.bouncycastle.crypto.StreamBlockCipher;
+import com.google.bitcoin.bouncycastle.crypto.StreamCipher;
 import com.google.bitcoin.bouncycastle.crypto.digests.RIPEMD160Digest;
+import com.google.bitcoin.bouncycastle.crypto.engines.AESEngine;
+import com.google.bitcoin.bouncycastle.crypto.engines.AESLightEngine;
+import com.google.bitcoin.bouncycastle.crypto.modes.CFBBlockCipher;
+import com.google.bitcoin.bouncycastle.crypto.params.KeyParameter;
+import com.google.bitcoin.bouncycastle.crypto.params.ParametersWithIV;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -24,6 +34,9 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.concurrent.Callable;
+
+import javax.jws.soap.SOAPBinding.Use;
 
 /**
  * A collection of various utility methods that are helpful for working with the BitCoin protocol.
@@ -238,4 +251,38 @@ public class Utils {
         if (size >= 3) bytes[6] = (byte) ((compact >>  0) & 0xFF);
         return decodeMPI(bytes);
     }
+    
+    /**
+     * AES 256 CFB encrypts/decrypts byte arrays. 
+     * When arbitrary length Strings are used as keys this overload should be called.
+     */
+    public static byte[] aes256(byte[] data, String key, boolean forEncryption) {  
+        byte[] seedBytes = key.getBytes();
+        try {
+            byte[] sha256 = MessageDigest.getInstance("SHA-256").digest(seedBytes);
+            return aes256(data, sha256, forEncryption);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    
+    /**
+     * AES 256 CFB encrypts/decrypts byte arrays. Keys must be 32 bytes.
+     */
+    public static byte[] aes256(byte[] data, byte[] key, boolean forEncryption) {
+        //256 bit
+        int blockSize = 32; 
+        BufferedBlockCipher cipher = new BufferedBlockCipher(new CFBBlockCipher(new AESEngine(), blockSize));
+        KeyParameter kp = new KeyParameter(key);
+        cipher.init(forEncryption, new ParametersWithIV(kp, new byte[blockSize])); 
+        byte[] out = new byte[cipher.getOutputSize(data.length)];
+        int len = cipher.processBytes(data, 0, data.length, out, 0);
+        try {
+            cipher.doFinal(out, len);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } 
+        return out; 
+    }
+
 }

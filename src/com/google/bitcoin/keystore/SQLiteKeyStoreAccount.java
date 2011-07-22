@@ -23,10 +23,14 @@ package com.google.bitcoin.keystore;
 public class SQLiteKeyStoreAccount {
     private int id;
     private String name;
+    private byte[] encryptedKey;
+    private byte[] keyHash;
     
-    public SQLiteKeyStoreAccount(int id, String name) {
+    public SQLiteKeyStoreAccount(int id, String name, byte[] encryptedKey, byte[] keyHash) {
         this.id = id;
         this.name = name;
+        this.encryptedKey = encryptedKey;
+        this.keyHash = keyHash;
     }
     
     public int getID() {
@@ -35,6 +39,14 @@ public class SQLiteKeyStoreAccount {
     
     public String getName() {
         return name;
+    }
+    
+    public byte[] getEncryptedKey() {
+        return encryptedKey;
+    }
+    
+    public byte[] getKeyHash() {
+        return keyHash;
     }
     
     @Override

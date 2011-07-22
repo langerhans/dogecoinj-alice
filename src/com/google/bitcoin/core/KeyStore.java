@@ -26,30 +26,44 @@
 package com.google.bitcoin.core;
 
 public interface KeyStore {
-        
+
     /**
-     * Locates a keypair from the keychain given the hash of the public key. This is needed when finding out which
-     * key we need to use to redeem a transaction output.
+     * Locates a keypair from the keychain given the hash of the public key.
+     * This is needed when finding out which key we need to use to redeem a
+     * transaction output.
+     * 
      * @return StoredKey object or null if no such key was found.
      */
     StoredKey findKeyFromPubHash(byte[] pubkeyHash);
-    
-    /** Returns true if this wallet contains a public key which hashes to the given hash. */
+
+    /**
+     * Returns true if this wallet contains a public key which hashes to the
+     * given hash.
+     */
     boolean isPubKeyHashMine(byte[] pubkeyHash);
-    
+
     /**
      * Locates a keypair from the keychain given the raw public key bytes.
+     * 
      * @return StoredKey or null if no such key was found.
      */
     StoredKey findKeyFromPubKey(byte[] pubKey);
-    
-    /** Returns true if this wallet contains a keypair with the given public key. */
+
+    /**
+     * Returns true if this wallet contains a keypair with the given public key.
+     */
     boolean isPubKeyMine(byte[] pubKey);
-    
-    /** Requests the KeyStore sign the input with the private half of the StoredKey. */
+
+    /**
+     * Requests the KeyStore sign the input with the private half of the
+     * StoredKey.
+     */
     byte[] sign(byte[] input, StoredKey withKey);
-    
-    /** Returns all the keys in the KeyStore. Be careful with high key counts and low memory.*/
+
+    /**
+     * Returns all the keys in the KeyStore. Be careful with high key counts and
+     * low memory.
+     */
     StoredKey[] getKeys();
-    
+
 }
