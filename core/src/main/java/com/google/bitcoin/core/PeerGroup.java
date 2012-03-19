@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class PeerGroup {
     private static final int DEFAULT_CONNECTIONS = 4;
+    private static final int PEER_DISCOVERY_FREQUENCY = 10;
 
     private static final Logger log = LoggerFactory.getLogger(PeerGroup.class);
 
@@ -401,6 +402,7 @@ public class PeerGroup {
 
         public void run() {
             try {
+                int tryCount = 0;
                 while (isRunning()) {
                     // Modify the peer group under its lock, always.
                     int numPeers;
@@ -408,13 +410,16 @@ public class PeerGroup {
                     synchronized (PeerGroup.this) {
                         numPeers = peers.size();
                     }
-                    
-                    if (inactives.size() == 0) {
-                        discoverPeers();
-                    } else if (numPeers < getMaxConnections()) {
-                        tryNextPeer();
-                    }
 
+                    if (numPeers < getMaxConnections()) {
+                        tryNextPeer();
+                        if ((tryCount % PEER_DISCOVERY_FREQUENCY) == 0) {
+                          discoverPeers();
+                        }
+                    }
+                    
+                    tryCount++;
+                    
                     // Wait for a task or the connection polling timeout to elapse. Tasks are only eligible to run
                     // when there is at least one active peer.
                     // TODO: Remove the need for this polling, only wake up the peer group thread when there's actually
@@ -463,8 +468,6 @@ public class PeerGroup {
                 for (int i = 0; i < addresses.length; i++) {
                     inactives.add(new PeerAddress(addresses[i]));
                 }
-
-                if (inactives.size() > 0) break;
             }
         }
         
@@ -478,7 +481,10 @@ public class PeerGroup {
          * Try connecting to a peer.  If we exceed the number of connections, delay and try again.
          */
         private void tryNextPeer() throws InterruptedException {
-            PeerAddress address = inactives.take();
+            PeerAddress address = inactives.poll();
+            if (address == null) {
+              return;
+            }
             while (true) {
                 try {
                     VersionMessage ver = getVersionMessage().duplicate();

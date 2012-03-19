@@ -46,7 +46,7 @@ public class PeerGroupTest extends TestWithNetworkConnections {
     public void setUp() throws Exception {
         super.setUp();
 
-        peerGroup = new PeerGroup(params, blockChain, 1000);
+        peerGroup = new PeerGroup(params, blockChain, 10);
         peerGroup.addWallet(wallet);
 
         // Support for testing disconnect events in a non-racy manner.
