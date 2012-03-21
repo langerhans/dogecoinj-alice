@@ -235,18 +235,17 @@ public class PeerAddress extends ChildMessage {
         return "[" + addr.getHostAddress() + "]:" + port;
     }
 
+    /** Addresses are considered equal if they refer to the same end-point. */
     @Override
     public boolean equals(Object o) {
         if (!(o instanceof PeerAddress)) return false;
         PeerAddress other = (PeerAddress) o;
         return other.addr.equals(addr) &&
-                other.port == port &&
-                other.services.equals(services) &&
-                other.time == time;
+                other.port == port;
     }
 
     @Override
     public int hashCode() {
-        return addr.hashCode() ^ port ^ (int) time ^ services.hashCode();
+        return addr.hashCode() ^ port;
     }
 }

@@ -466,7 +466,23 @@ public class PeerGroup {
                 }
 
                 for (int i = 0; i < addresses.length; i++) {
-                    inactives.add(new PeerAddress(addresses[i]));
+                    PeerAddress address = new PeerAddress(addresses[i]);
+                    // Add to inactives if not already seen
+                    synchronized (PeerGroup.this) {
+                        boolean exists = false;
+                        
+                        synchronized (peers) {
+                            for (Peer peer : peers) {
+                                if (peer.getAddress().equals(address)) {
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!exists && !inactives.contains(address)) {
+                            inactives.add(address);
+                        }
+                    }
                 }
             }
         }
