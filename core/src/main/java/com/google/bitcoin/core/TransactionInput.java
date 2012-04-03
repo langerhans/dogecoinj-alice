@@ -320,7 +320,7 @@ public class TransactionInput extends ChildMessage implements Serializable {
     }
     
     /** 
-     * Determine whether the transaction input is in the wallet 
+     * Determine whether the transaction input is in the wallet specified
      */
     public boolean isMine(Wallet wallet) {
         try {

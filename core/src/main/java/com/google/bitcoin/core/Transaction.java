@@ -773,10 +773,10 @@ public class Transaction extends ChildMessage implements Serializable {
     }
     
     /**
-     * returns whether this transaction uses one of the wallet's keys
+     * Returns whether this transaction uses one of the wallet's keys
      * 
      * @param wallet
-     * @return
+     * @return true if the transaction references one of the wallet's keys, false otherwise
      */
     public boolean isMine(Wallet wallet) {
         try {
