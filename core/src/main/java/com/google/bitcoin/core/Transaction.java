@@ -16,6 +16,10 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.core.ScriptException;
+import com.google.bitcoin.core.TransactionInput;
+import com.google.bitcoin.core.TransactionOutput;
+import com.google.bitcoin.core.Wallet;
 import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -766,5 +770,45 @@ public class Transaction extends ChildMessage implements Serializable {
     private void writeObject(ObjectOutputStream out) throws IOException {
         maybeParse();
         out.defaultWriteObject();
+    }
+    
+    /**
+     * returns whether this transaction uses one of the wallet's keys
+     * 
+     * @param wallet
+     * @return
+     */
+    public boolean isMine(Wallet wallet) {
+        try {
+            for (TransactionOutput output : this.outputs) {
+                // TODO: Handle more types of outputs, not just regular to
+                // address outputs.
+                if (output.getScriptPubKey().isSentToIP())
+                    continue;
+                // This is not thread safe as a key could be removed between the
+                // call to isMine and receive.
+                if (output.isMine(wallet)) {
+                    return true;
+                }
+            }
+
+            for (TransactionInput input : this.inputs) {
+                try {
+                    if (input.getScriptSig().isSentToIP())
+                        continue;
+                    // This is not thread safe as a key could be removed between the
+                    // call to isPubKeyMine and receive.
+                    if (input.isMine(wallet)) {
+                        return true;
+                    }
+                } catch (ScriptException e) {
+                    // cannot understand this transaction input - ignore
+                    log.info(e.getMessage());
+                }
+            }
+            return false;
+        } catch (ScriptException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

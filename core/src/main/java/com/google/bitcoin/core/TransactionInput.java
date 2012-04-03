@@ -16,6 +16,8 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.core.ScriptException;
+import com.google.bitcoin.core.Wallet;
 import com.google.common.base.Preconditions;
 
 import java.io.IOException;
@@ -315,5 +317,17 @@ public class TransactionInput extends ChildMessage implements Serializable {
 
     public boolean hasSequence() {
         return sequence != NO_SEQUENCE;
+    }
+    
+    /** 
+     * Determine whether the transaction input is in the wallet 
+     */
+    public boolean isMine(Wallet wallet) {
+        try {
+            byte[] pubkey = getScriptSig().getPubKey();
+            return wallet.isPubKeyMine(pubkey);
+        } catch (ScriptException e) {
+            return false;
+        }
     }
 }

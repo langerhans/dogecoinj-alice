@@ -16,6 +16,8 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.core.ScriptException;
+import com.google.bitcoin.core.Transaction;
 import com.google.bitcoin.core.WalletTransaction.Pool;
 import com.google.bitcoin.utils.EventListenerInvoker;
 import org.slf4j.Logger;
@@ -378,11 +380,11 @@ public class Wallet implements Serializable {
      * Note that if the tx has inputs containing one of our keys, but the connected transaction is not in the wallet,
      * it will not be considered relevant.
      */
-    public synchronized boolean isTransactionRelevant(Transaction tx,
-                                                      boolean includeDoubleSpending) throws ScriptException {
-        return tx.getValueSentFromMe(this).compareTo(BigInteger.ZERO) > 0 ||
-               tx.getValueSentToMe(this).compareTo(BigInteger.ZERO) > 0 ||
-               (includeDoubleSpending && (findDoubleSpendAgainstPending(tx) != null));
+    public synchronized boolean isTransactionRelevant(Transaction tx, 
+    												  boolean includeDoubleSpending) throws ScriptException {
+        return tx.isMine(this) || tx.getValueSentFromMe(this).compareTo(BigInteger.ZERO) > 0
+                || tx.getValueSentToMe(this).compareTo(BigInteger.ZERO) > 0
+                || (includeDoubleSpending && (findDoubleSpendAgainstPending(tx) != null));
     }
 
     /**
@@ -425,6 +427,16 @@ public class Wallet implements Serializable {
         if (!reorg) {
             log.info("Received tx{} for {} BTC: {}", new Object[]{sideChain ? " on a side chain" : "",
                     bitcoinValueToFriendlyString(valueDifference), tx.getHashAsString()});
+        }
+        
+        // If the transaction is already in our spent or unspent or there is no money in it it is probably
+        // due to a block replay so we do not want to do anything with it
+        // if it is on a sidechain then let the ELSE below deal with it
+        boolean alreadyHaveIt = spent.containsKey(tx.getHash()) || unspent.containsKey(tx.getHash());
+        boolean noMoneyInItAndNotMine = BigInteger.ZERO.equals(valueSentFromMe) && BigInteger.ZERO.equals(valueSentToMe) && !tx.isMine(this);
+        if (bestChain &&(alreadyHaveIt || noMoneyInItAndNotMine)) {
+            log.info("Already have tx " + tx.getHash() + " in spent/ unspent or there is no money in it and it is not mine so ignoring");
+            return;
         }
 
         // If this transaction is already in the wallet we may need to move it into a different pool. At the very
@@ -538,6 +550,14 @@ public class Wallet implements Serializable {
             log.info("  new tx ->spent");
             boolean alreadyPresent = spent.put(tx.getHash(), tx) != null;
             checkState(!alreadyPresent, "TX was received twice");
+        } else if (tx.isMine(this)) {
+            // a transaction that does not spend or send us coins but is ours none the less
+            // this can occur when a transaction is sent from outputs in our wallet to
+            // an address in the wallet - it burns a fee but is valid
+            log.info(" new tx -> spent (transfer within wallet - simply burns fee)");
+            boolean alreadyPresent = spent.put(tx.getHash(), tx) != null;
+            assert !alreadyPresent : "TX was received twice (transfer within wallet - simply burns fee";
+            invokeOnTransactionConfidenceChanged(tx);
         } else {
             // It didn't send us coins nor spend any of our coins. If we're processing it, that must be because it
             // spends outpoints that are also spent by some pending transactions - maybe a double spend of somebody
