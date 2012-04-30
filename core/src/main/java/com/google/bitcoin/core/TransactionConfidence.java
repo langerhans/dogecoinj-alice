@@ -17,6 +17,8 @@
 package com.google.bitcoin.core;
 
 import com.google.bitcoin.store.BlockStoreException;
+import com.google.bitcoin.utils.EventListenerInvoker;
+import com.google.common.base.Preconditions;
 
 import java.io.Serializable;
 import java.math.BigInteger;
@@ -65,6 +67,7 @@ public class TransactionConfidence implements Serializable {
     private Set<PeerAddress> broadcastBy;
     /** The Transaction that this confidence object is associated with. */
     private Transaction transaction;
+    // Lazily created listeners array.
     private transient ArrayList<Listener> listeners;
 
     // TODO: The advice below is a mess. There should be block chain listeners, see issue 94.
@@ -72,23 +75,22 @@ public class TransactionConfidence implements Serializable {
      * <p>Adds an event listener that will be run when this confidence object is updated. The listener will be locked and
      * is likely to be invoked on a peer thread.</p>
      * 
-     * <p>Note that this is NOT called when every block is arrived. Instead it is called when the transaction 
+     * <p>Note that this is NOT called when every block arrives. Instead it is called when the transaction
      * transitions between confidence states, ie, from not being seen in the chain to being seen (not necessarily in 
      * the best chain). If you want to know when the transaction gets buried under another block, listen for new block
      * events using {@link PeerEventListener#onBlocksDownloaded(Peer, Block, int)} and then use the getters on the
      * confidence object to determine the new depth.</p>
      */
     public synchronized void addEventListener(Listener listener) {
-        if (listener == null)
-            throw new IllegalArgumentException("listener is null");
+        Preconditions.checkNotNull(listener);
         if (listeners == null)
             listeners = new ArrayList<Listener>(1);
         listeners.add(listener);
     }
 
     public synchronized void removeEventListener(Listener listener) {
-        if (listener == null)
-            throw new IllegalArgumentException("listener is null");
+        Preconditions.checkNotNull(listener);
+        Preconditions.checkNotNull(listeners);
         listeners.remove(listener);
     }
 
@@ -212,14 +214,19 @@ public class TransactionConfidence implements Serializable {
     /**
      * Called by a {@link Peer} when a transaction is pending and announced by a peer. The more peers announce the
      * transaction, the more peers have validated it (assuming your internet connection is not being intercepted).
-     * If confidence is currently unknown, sets it to {@link ConfidenceType#NOT_SEEN_IN_CHAIN}.
+     * If confidence is currently unknown, sets it to {@link ConfidenceType#NOT_SEEN_IN_CHAIN}. Listeners will be
+     * invoked in this case.
      *
      * @param address IP address of the peer, used as a proxy for identity.
      */
     public synchronized void markBroadcastBy(PeerAddress address) {
         broadcastBy.add(address);
-        if (getConfidenceType() == ConfidenceType.UNKNOWN)
+        if (getConfidenceType() == ConfidenceType.UNKNOWN) {
             setConfidenceType(ConfidenceType.NOT_SEEN_IN_CHAIN);
+            // Listeners are already run by setConfidenceType.
+        } else {
+            runListeners();
+        }
     }
 
     /**
@@ -304,7 +311,7 @@ public class TransactionConfidence implements Serializable {
      * @throws IllegalStateException if confidence type is not BUILDING
      * @return estimated number of hashes needed to reverse the transaction.
      */
-    public BigInteger getWorkDone(BlockChain chain) throws BlockStoreException {
+    public synchronized BigInteger getWorkDone(BlockChain chain) throws BlockStoreException {
         int depth;
         synchronized (this) {
             if (getConfidenceType() != ConfidenceType.BUILDING)
@@ -356,16 +363,11 @@ public class TransactionConfidence implements Serializable {
     }
 
     private void runListeners() {
-        if (listeners == null) return;
-        for (int i = 0; i < listeners.size(); i++) {
-            Listener l = listeners.get(i);
-            synchronized (l) {
-                l.onConfidenceChanged(transaction);
+        EventListenerInvoker.invoke(listeners, new EventListenerInvoker<Listener>() {
+            @Override
+            public void invoke(Listener listener) {
+                listener.onConfidenceChanged(transaction);
             }
-            if (listeners.get(i) != l) {
-                // Listener removed itself.
-                i--;
-            }
-        }
+        });
     }
 }

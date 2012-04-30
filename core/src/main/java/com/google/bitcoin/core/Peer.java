@@ -25,9 +25,9 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.*;
 
 /**
@@ -49,8 +49,6 @@ public class Peer {
     // whilst waiting for the response. Synchronized on itself. Is not used for downloads Peer generates itself.
     // TODO: Make this work for transactions as well.
     private final List<GetDataFuture<Block>> pendingGetBlockFutures;
-    // Height of the chain advertised in the peers version message.
-    private int bestHeight;
     private PeerAddress address;
     private List<PeerEventListener> eventListeners;
     // Whether to try and download blocks and transactions from this peer. Set to false by PeerGroup if not the
@@ -60,26 +58,9 @@ public class Peer {
     // The version data to announce to the other side of the connections we make: useful for setting our "user agent"
     // equivalent and other things.
     private VersionMessage versionMessage;
-
-    /**
-     * Size of the pending transactions pool. Override this to reduce memory usage on constrained platforms. The pool
-     * is used to keep track of how many peers announced a transaction. With an untampered-with internet connection,
-     * the more peers announce a transaction, the more confidence you can have that it's valid.
-     */
-    public static int TRANSACTION_MEMORY_POOL_SIZE = 1000;
-
-    // Maps announced transaction hashes to the Transaction objects. If this is not a download peer, the Transaction
-    // objects must be provided from elsewhere (ie, a PeerGroup object). If the Transaction hasn't been downloaded or
-    // provided yet, the map value is null. This is somewhat equivalent to the reference implementations memory pool.
-    private LinkedHashMap<Sha256Hash, Transaction> announcedTransactionHashes = new LinkedHashMap<Sha256Hash, Transaction>() {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<Sha256Hash, Transaction> sha256HashTransactionEntry) {
-            // An arbitrary choice to stop the memory used by tracked transactions getting too huge. Mobile platforms
-            // may want to reduce this.
-            return size() > TRANSACTION_MEMORY_POOL_SIZE;
-        }
-    };
-
+    // A class that tracks recent transactions that have been broadcast across the network, counts how many
+    // peers announced them and updates the transaction confidence data. It is passed to each Peer.
+    private MemoryPool memoryPool;
     // A time before which we only download block headers, after that point we download block bodies.
     private long fastCatchupTimeSecs;
     // Whether we are currently downloading headers only or block bodies. Defaults to true, if the fast catchup time
@@ -136,6 +117,18 @@ public class Peer {
 
     public synchronized boolean removeEventListener(PeerEventListener listener) {
         return eventListeners.remove(listener);
+    }
+
+    /**
+     * Tells the peer to insert received transactions/transaction announcements into the given {@link MemoryPool}.
+     * This is normally done for you by the {@link PeerGroup} so you don't have to think about it. Transactions stored
+     * in a memory pool will have their confidence levels updated when a peer announces it, to reflect the greater
+     * likelyhood that the transaction is valid.
+     *
+     * @param pool A new pool or null to unlink.
+     */
+    public synchronized void setMemoryPool(MemoryPool pool) {
+        memoryPool = pool;
     }
 
     @Override
@@ -221,7 +214,7 @@ public class Peer {
         } catch (IOException e) {
             if (!running) {
                 // This exception was expected because we are tearing down the socket as part of quitting.
-                log.info("Shutting down peer loop");
+                log.info("{}: Shutting down peer loop", address);
             } else {
                 disconnect();
                 throw new PeerException(e);
@@ -230,8 +223,8 @@ public class Peer {
             disconnect();
             throw new PeerException(e);
         } catch (RuntimeException e) {
+            log.error("Unexpected exception in peer loop", e);
             disconnect();
-            log.error("unexpected exception in peer loop: ", e.getMessage());
             throw e;
         }
 
@@ -283,8 +276,10 @@ public class Peer {
                     return;
                 }
             }
-            // We added all headers in the message to the chain. Now request some more!
-            blockChainDownload(Sha256Hash.ZERO_HASH);
+            // We added all headers in the message to the chain. Request some more if we got up to the limit, otherwise
+            // we are at the end of the chain.
+            if (m.getBlockHeaders().size() >= HeadersMessage.MAX_HEADERS)
+                blockChainDownload(Sha256Hash.ZERO_HASH);
         } catch (VerificationException e) {
             log.warn("Block header verification failed", e);
         } catch (ScriptException e) {
@@ -314,6 +309,8 @@ public class Peer {
 
     private void processTransaction(Transaction m) {
         log.info("Received broadcast tx {}", m.getHashAsString());
+        if (memoryPool != null)
+            memoryPool.seen(m, getAddress());
         for (PeerEventListener listener : eventListeners) {
             synchronized (listener) {
                 listener.onTransaction(this, m);
@@ -322,7 +319,7 @@ public class Peer {
     }
 
     private void processBlock(Block m) throws IOException {
-        log.trace("Received broadcast block {}", m.getHashAsString());
+        log.debug("Received broadcast block {}", m.getHashAsString());
         try {
             // Was this block requested by getBlock()?
             synchronized (pendingGetBlockFutures) {
@@ -377,84 +374,61 @@ public class Peer {
     private void processInv(InventoryMessage inv) throws IOException {
         // This should be called in the network loop thread for this peer.
         List<InventoryItem> items = inv.getItems();
-        updateTransactionConfidenceLevels(items);
 
-        // If this peer isn't responsible for downloading stuff, don't go further.
-        if (!downloadData)
-            return;
+        // Separate out the blocks and transactions, we'll handle them differently
+        List<InventoryItem> transactions = new LinkedList<InventoryItem>();
+        List<InventoryItem> blocks = new LinkedList<InventoryItem>();
 
-        // The peer told us about some blocks or transactions they have.
-        Block topBlock = blockChain.getUnconnectedBlock();
-        Sha256Hash topHash = (topBlock != null ? topBlock.getHash() : null);
-        if (isNewBlockTickle(topHash, items)) {
-            // An inv with a single hash containing our most recent unconnected block is a special inv,
-            // it's kind of like a tickle from the peer telling us that it's time to download more blocks to catch up to
-            // the block chain. We could just ignore this and treat it as a regular inv but then we'd download the head
-            // block over and over again after each batch of 500 blocks, which is wasteful.
-            blockChainDownload(topHash);
-            return;
-        }
-        // Just copy the message contents across - request whatever we're told about.
-        // TODO: Don't re-request items that were already fetched.
-        GetDataMessage getdata = new GetDataMessage(params);
         for (InventoryItem item : items) {
-            getdata.addItem(item);
-        }
-        // This will cause us to receive a bunch of block or tx messages.
-        conn.writeMessage(getdata);
-    }
-
-    /**
-     * When a peer broadcasts an "inv" containing a transaction hash, it means the peer validated it and won't accept 
-     * double spends of those coins. So by measuring what proportion of our total connected peers have seen a 
-     * transaction we can make a guesstimate of how likely it is to be included in a block, assuming our internet
-     * connection is trustworthy.<p>
-     *     
-     * This method keeps a map of transaction hashes to {@link Transaction} objects. It may not have the associated
-     * transaction objects available, if they weren't downloaded yet. Once a Transaction is downloaded, it's set as
-     * the value in the txSeen map. If this Peer isn't the download peer, the {@link PeerGroup} will manage distributing
-     * the Transaction objects to every peer, at which point the peer is expected to update the
-     * {@link TransactionConfidence} object itself.
-     * 
-     * @param items Inventory items that were just announced.
-     */
-    private void updateTransactionConfidenceLevels(List<InventoryItem> items) {
-        // Announced hashes may be updated by other threads in response to messages coming in from other peers.
-        synchronized (announcedTransactionHashes) {
-            for (InventoryItem item : items) {
-                if (item.type != InventoryItem.Type.Transaction) continue;
-                Transaction transaction = announcedTransactionHashes.get(item.hash);
-                if (transaction == null) {
-                    // We didn't see this tx before.
-                    log.debug("Newly announced undownloaded transaction ", item.hash);
-                    announcedTransactionHashes.put(item.hash, null);
-                } else {
-                    // It's been downloaded. Update the confidence levels. This may be called multiple times for
-                    // the same transaction and the same peer, there is no obligation in the protocol to avoid
-                    // redundant advertisements.
-                    log.debug("Marking tx {} as seen by {}", item.hash, toString());
-                    transaction.getConfidence().markBroadcastBy(address);
-                }
+            switch (item.type) {
+                case Transaction: transactions.add(item); break;
+                case Block: blocks.add(item); break;
             }
         }
-    }
 
-    /**
-     * Called by {@link PeerGroup} to tell the Peer about a transaction that was just downloaded. If we have tracked
-     * the announcement, update the transactions confidence level at this time. Otherwise wait for it to appear.
-     */
-    void trackTransaction(Transaction tx) {
-        // May run on arbitrary peer threads.
-        synchronized (announcedTransactionHashes) {
-            if (announcedTransactionHashes.containsKey(tx.getHash())) {
-                Transaction storedTx = announcedTransactionHashes.get(tx.getHash());
-                Preconditions.checkState(storedTx == tx || storedTx == null, "single Transaction instance");
-                log.debug("Provided with a downloaded transaction we have seen before: {}", tx.getHash());
-                tx.getConfidence().markBroadcastBy(address);
+        GetDataMessage getdata = new GetDataMessage(params);
+
+        Iterator<InventoryItem> it = transactions.iterator();
+        while (it.hasNext()) {
+            InventoryItem item = it.next();
+            if (memoryPool == null && downloadData) {
+                // If there's no memory pool only download transactions if we're configured to.
+                getdata.addItem(item);
             } else {
-                log.debug("Provided with a downloaded transaction we didn't see broadcast yet: {}", tx.getHash());
+                // Only download the transaction if we are the first peer that saw it be advertised. Other peers will also
+                // see it be advertised in inv packets asynchronously, they co-ordinate via the memory pool. We could
+                // potentially download transactions faster by always asking every peer for a tx when advertised, as remote
+                // peers run at different speeds. However to conserve bandwidth on mobile devices we try to only download a
+                // transaction once. This means we can miss broadcasts if the peer disconnects between sending us an inv and
+                // sending us the transaction: currently we'll never try to re-fetch after a timeout.
+                if (memoryPool.maybeWasSeen(item.hash)) {
+                    // Some other peer already announced this so don't download.
+                    it.remove();
+                } else {
+                    getdata.addItem(item);
+                }
+                memoryPool.seen(item.hash, this.getAddress());
             }
-            announcedTransactionHashes.put(tx.getHash(), tx);
+        }
+
+        if (blocks.size() > 0 && downloadData) {
+            Block topBlock = blockChain.getUnconnectedBlock();
+            Sha256Hash topHash = (topBlock != null ? topBlock.getHash() : null);
+            if (isNewBlockTickle(topHash, blocks)) {
+                // An inv with a single hash containing our most recent unconnected block is a special inv,
+                // it's kind of like a tickle from the peer telling us that it's time to download more blocks to catch up to
+                // the block chain. We could just ignore this and treat it as a regular inv but then we'd download the head
+                // block over and over again after each batch of 500 blocks, which is wasteful.
+                blockChainDownload(topHash);
+                return;
+            }
+            // Request the advertised blocks only if we're the download peer.
+            for (InventoryItem item : blocks) getdata.addItem(item);
+        }
+
+        if (!getdata.getItems().isEmpty()) {
+            // This will cause us to receive a bunch of block or tx messages.
+            conn.writeMessage(getdata);
         }
     }
 
@@ -743,8 +717,8 @@ public class Peer {
     /**
      * @return the height of the best chain as claimed by peer.
      */
-    public int getBestHeight() {
-      return bestHeight;
+    public long getBestHeight() {
+      return conn.getVersionMessage().bestHeight;
     }
     
     /**

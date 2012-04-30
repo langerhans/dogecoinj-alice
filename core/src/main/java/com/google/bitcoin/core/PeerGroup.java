@@ -20,6 +20,7 @@ package com.google.bitcoin.core;
 import com.google.bitcoin.discovery.PeerDiscovery;
 import com.google.bitcoin.discovery.PeerDiscoveryException;
 import com.google.bitcoin.utils.EventListenerInvoker;
+import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,6 +80,9 @@ public class PeerGroup {
     private Set<PeerDiscovery> peerDiscoverers;
     // The version message to use for new connections.
     private VersionMessage versionMessage;
+    // A class that tracks recent transactions that have been broadcast across the network, counts how many
+    // peers announced them and updates the transaction confidence data. It is passed to each Peer.
+    private final MemoryPool memoryPool;
 
     private NetworkParameters params;
     private BlockChain chain;
@@ -113,6 +117,8 @@ public class PeerGroup {
         // this is.
         this.versionMessage = new VersionMessage(params, chain.getBestChainHeight());
 
+        memoryPool = new MemoryPool();
+
         inactives = new LinkedBlockingQueue<PeerAddress>();
         // TODO: Remove usage of synchronized sets here in favor of simple coarse-grained locking.
         peers = Collections.synchronizedSet(new HashSet<Peer>());
@@ -124,17 +130,7 @@ public class PeerGroup {
                 THREAD_KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<Runnable>(1),
                 new PeerGroupThreadFactory());
-        // peerEventListeners get a subset of events seen by the group. We add our own internal listener to this so
-        // when we download a transaction, we can distribute it to each Peer in the pool so they can update the
-        // transactions confidence level if they've seen it be announced/when they see it be announced.
         peerEventListeners = new ArrayList<PeerEventListener>();
-        addEventListener(new AbstractPeerEventListener() {
-            @Override
-            public void onTransaction(Peer peer, Transaction t) {
-                handleBroadcastTransaction(t);
-            }
-        });
-
         // This event listener is added to every peer. It's here so when we announce transactions via an "inv", every
         // peer can fetch them.
         getDataListener = new AbstractPeerEventListener() {
@@ -146,7 +142,8 @@ public class PeerGroup {
     }
 
     private synchronized List<Message> handleGetData(GetDataMessage m) {
-        // Scans the wallets for transactions in the getdata message and returns them. Invoked in parallel on peer threads.
+        // Scans the wallets for transactions in the getdata message and returns them. Invoked in parallel
+        // on peer threads.
         HashMap<Sha256Hash, Message> transactions = new HashMap<Sha256Hash, Message>();
         for (Wallet w : wallets) {
             synchronized (w) {
@@ -158,14 +155,6 @@ public class PeerGroup {
             }
         }
         return new LinkedList<Message>(transactions.values());
-    }
-
-    private synchronized void handleBroadcastTransaction(Transaction tx) {
-        // Called on the download peer thread when we have downloaded an advertised Transaction. Distribute it to all
-        // the peers in the group so they can update the confidence if they saw it be advertised or when they do see it.
-        for (Peer p : peers) {
-            p.trackTransaction(tx);
-        }
     }
 
     /**
@@ -251,8 +240,7 @@ public class PeerGroup {
      */
     public void addPeer(Peer peer) {
         synchronized (this) {
-            if (!running)
-                throw new IllegalStateException("Must call start() before adding peers.");
+            Preconditions.checkState(running, "Must call start() before adding peers.");
             log.info("Adding directly to group: {}", peer);
         }
         // This starts the peer thread running. Note: this is not synchronized. If it were, we could not
@@ -338,6 +326,7 @@ public class PeerGroup {
                 // This is run with the peer group already locked.
                 for (Peer peer : peers) {
                     try {
+                        log.info("{}: Sending transaction {}", peer.getAddress(), tx.getHashAsString());
                         peer.sendMessage(tx);
                     } catch (IOException e) {
                         log.warn("Caught IOException whilst sending transaction: {}", e.getMessage());
@@ -648,7 +637,10 @@ public class PeerGroup {
     }
 
     protected synchronized void handleNewPeer(final Peer peer) {
-        log.info("Handling new {}", peer);
+        // Runs on a peer thread for every peer that is newly connected.
+        log.info("{}: New peer", peer);
+        // Link the peer to the memory pool so broadcast transactions have their confidence levels updated.
+        peer.setMemoryPool(memoryPool);
         // If we want to download the chain, and we aren't currently doing so, do so now.
         if (downloadListener != null && downloadPeer == null) {
             log.info("  starting block chain download");
@@ -658,10 +650,17 @@ public class PeerGroup {
         } else {
             peer.setDownloadData(false);
         }
+        // Make sure the peer knows how to upload transactions that are requested from us.
+        peer.addEventListener(getDataListener);
         // Now tell the peers about any transactions we have which didn't appear in the chain yet. These are not
         // necessarily spends we created. They may also be transactions broadcast across the network that we saw,
         // which are relevant to us, and which we therefore wish to help propagate (ie they send us coins).
-        peer.addEventListener(getDataListener);
+        //
+        // Note that this can cause a DoS attack against us if a malicious remote peer knows what keys we own, and
+        // then sends us fake relevant transactions. We'll attempt to relay the bad transactions, our badness score
+        // in the Satoshi client will increase and we'll get disconnected.
+        //
+        // TODO: Find a way to balance the desire to propagate useful transactions against obscure DoS attacks.
         announcePendingWalletTransactions(wallets, Collections.singleton(peer));
         EventListenerInvoker.invoke(peerEventListeners, new EventListenerInvoker<PeerEventListener>() {
             @Override
@@ -688,6 +687,7 @@ public class PeerGroup {
         boolean success = false;
         for (Peer p : announceToPeers) {
             try {
+                log.info("{}: Announcing {} pending wallet transactions", p.getAddress(), inv.getItems().size());
                 p.sendMessage(inv);
                 success = true;
             } catch (IOException e) {
@@ -714,6 +714,17 @@ public class PeerGroup {
                 downloadPeer.addEventListener(listener);
             }
         }
+    }
+
+    /**
+     * Returns the {@link MemoryPool} created by this peer group to synchronize its peers. The pool tracks advertised
+     * and downloaded transactions so their confidence can be measured as a proportion of how many peers announced it.
+     * With an un-tampered with internet connection, the more peers announce a transaction the more confidence you can
+     * have that it's really valid.
+     */
+    public MemoryPool getMemoryPool() {
+        // Locking unneeded as memoryPool is final.
+        return memoryPool;
     }
 
     /**

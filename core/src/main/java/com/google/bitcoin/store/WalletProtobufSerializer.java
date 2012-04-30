@@ -18,6 +18,7 @@ package com.google.bitcoin.store;
 
 import com.google.bitcoin.core.*;
 import com.google.bitcoin.core.TransactionConfidence.ConfidenceType;
+import com.google.common.base.Preconditions;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.TextFormat;
 import org.bitcoinj.wallet.Protos;
@@ -36,7 +37,7 @@ import java.util.Map;
  * Serialize and de-serialize a wallet to a byte stream containing a
  * <a href="http://code.google.com/apis/protocolbuffers/docs/overview.html">protocol buffer</a>. Protocol buffers are
  * a data interchange format developed by Google with an efficient binary representation, a type safe specification
- * languaeg and compilers that generate code to work with those data structures for many languages. Protocol buffers
+ * language and compilers that generate code to work with those data structures for many languages. Protocol buffers
  * can have their format evolved over time: conceptually they represent data using (tag, length, value) tuples. The
  * format is defined by the <tt>bitcoin.proto</tt> file in the BitCoinJ source distribution.<p>
  *
@@ -73,9 +74,10 @@ public class WalletProtobufSerializer {
 
     /**
      * Returns the given wallet formatted as text. The text format is that used by protocol buffers and although it
-     * can also be parsed using {@link TextFormat.merge()}, it is designed more for debugging than storage. It is not 
-     * well specified and wallets are largely binary data structures anyway, consisting as they do of keys (large
-     * random numbers) and {@link Transaction}s which also mostly contain keys and hashes.
+     * can also be parsed using {@link TextFormat#merge(CharSequence, com.google.protobuf.Message.Builder)},
+     * it is designed more for debugging than storage. It is not well specified and wallets are largely binary data
+     * structures anyway, consisting as they do of keys (large random numbers) and {@link Transaction}s which also
+     * mostly contain keys and hashes.
      */
     public static String walletToText(Wallet wallet) {
         Protos.Wallet walletProto = walletToProto(wallet);
@@ -88,8 +90,7 @@ public class WalletProtobufSerializer {
      */
     public static Protos.Wallet walletToProto(Wallet wallet) {
         Protos.Wallet.Builder walletBuilder = Protos.Wallet.newBuilder();
-        walletBuilder
-            .setNetworkIdentifier(wallet.getNetworkParameters().getId())
+        walletBuilder.setNetworkIdentifier(wallet.getNetworkParameters().getId())
             //.setLastSeenBlockHash(null)  // TODO
             ;
         for (WalletTransaction wtx : wallet.getWalletTransactions()) {
@@ -98,14 +99,16 @@ public class WalletProtobufSerializer {
         }
         
         for (ECKey key : wallet.getKeys()) {
-            walletBuilder.addKey(
-                    Protos.Key.newBuilder()
-                        .setCreationTimestamp(key.getCreationTimeSeconds() * 1000)
-                        // .setLabel() TODO
-                        .setType(Protos.Key.Type.ORIGINAL)
-                        .setPrivateKey(ByteString.copyFrom(key.getPrivKeyBytes()))
-                        .setPublicKey(ByteString.copyFrom(key.getPubKey()))
-                        );
+            Protos.Key.Builder buf = Protos.Key.newBuilder().setCreationTimestamp(key.getCreationTimeSeconds() * 1000)
+                                                         // .setLabel() TODO
+                                                            .setType(Protos.Key.Type.ORIGINAL);
+            if (key.getPrivKeyBytes() != null)
+                buf.setPrivateKey(ByteString.copyFrom(key.getPrivKeyBytes()));
+            // We serialize the public key even if the private key is present for speed reasons: we don't want to do
+            // lots of slow EC math to load the wallet, we prefer to store the redundant data instead. It matters more
+            // on mobile platforms.
+            buf.setPublicKey(ByteString.copyFrom(key.getPubKey()));
+            walletBuilder.addKey(buf);
         }
         return walletBuilder.build();
     }
@@ -114,11 +117,9 @@ public class WalletProtobufSerializer {
         Transaction tx = wtx.getTransaction();
         Protos.Transaction.Builder txBuilder = Protos.Transaction.newBuilder();
         
-        txBuilder
-            .setPool(Protos.Transaction.Pool.valueOf(wtx.getPool().getValue()))
-            .setHash(ByteString.copyFrom(tx.getHash().getBytes()))
-            .setVersion((int)tx.getVersion())
-            ;
+        txBuilder.setPool(Protos.Transaction.Pool.valueOf(wtx.getPool().getValue()))
+                 .setHash(hashToByteString(tx.getHash()))
+                 .setVersion((int) tx.getVersion());
 
         if (tx.getUpdateTime() != null) {
             txBuilder.setUpdatedAt(tx.getUpdateTime().getTime());
@@ -128,37 +129,34 @@ public class WalletProtobufSerializer {
             txBuilder.setLockTime((int)tx.getLockTime());
         }
         
-        // Handle inputs
+        // Handle inputs.
         for (TransactionInput input : tx.getInputs()) {
             Protos.TransactionInput.Builder inputBuilder = Protos.TransactionInput.newBuilder()
                 .setScriptBytes(ByteString.copyFrom(input.getScriptBytes()))
-                .setTransactionOutPointHash(ByteString.copyFrom(
-                    input.getOutpoint().getHash().getBytes()))
-                .setTransactionOutPointIndex((int)input.getOutpoint().getIndex()); // FIXME
+                .setTransactionOutPointHash(hashToByteString(input.getOutpoint().getHash()))
+                .setTransactionOutPointIndex((int) input.getOutpoint().getIndex());
             if (input.hasSequence()) {
                 inputBuilder.setSequence((int)input.getSequence());
             }
             txBuilder.addTransactionInput(inputBuilder);
         }
         
-        // Handle outputs
+        // Handle outputs.
         for (TransactionOutput output : tx.getOutputs()) {
-            Protos.TransactionOutput.Builder outputBuilder =
-                    Protos.TransactionOutput.newBuilder()
-                        .setScriptBytes(ByteString.copyFrom(output.getScriptBytes()))
-                        .setValue(output.getValue().longValue());
+            Protos.TransactionOutput.Builder outputBuilder = Protos.TransactionOutput.newBuilder()
+                .setScriptBytes(ByteString.copyFrom(output.getScriptBytes()))
+                .setValue(output.getValue().longValue());
             final TransactionInput spentBy = output.getSpentBy();
             if (spentBy != null) {
                 Sha256Hash spendingHash = spentBy.getParentTransaction().getHash();
-                outputBuilder
-                    .setSpentByTransactionHash(hashToByteString(spendingHash))
-                    .setSpentByTransactionIndex(
-                            spentBy.getParentTransaction().getInputs().indexOf(spentBy));
+                int spentByTransactionIndex = spentBy.getParentTransaction().getInputs().indexOf(spentBy);
+                outputBuilder.setSpentByTransactionHash(hashToByteString(spendingHash))
+                             .setSpentByTransactionIndex(spentByTransactionIndex);
             }
             txBuilder.addTransactionOutput(outputBuilder);
         }
         
-        // Handle which blocks tx was seen in
+        // Handle which blocks tx was seen in.
         if (tx.getAppearsInHashes() != null) {
             for (Sha256Hash hash : tx.getAppearsInHashes()) {
                 txBuilder.addBlockHash(hashToByteString(hash));
@@ -167,21 +165,17 @@ public class WalletProtobufSerializer {
         
         if (tx.hasConfidence()) {
             TransactionConfidence confidence = tx.getConfidence();
-            Protos.TransactionConfidence.Builder confidenceBuilder =
-                Protos.TransactionConfidence.newBuilder();
-            
+            Protos.TransactionConfidence.Builder confidenceBuilder = Protos.TransactionConfidence.newBuilder();
             writeConfidence(txBuilder, confidence, confidenceBuilder);
         }
         
         return txBuilder.build();
     }
 
-    private static void writeConfidence(
-            Protos.Transaction.Builder txBuilder,
-            TransactionConfidence confidence,
-            Protos.TransactionConfidence.Builder confidenceBuilder) {
-        confidenceBuilder.setType(
-                Protos.TransactionConfidence.Type.valueOf(confidence.getConfidenceType().getValue()));
+    private static void writeConfidence(Protos.Transaction.Builder txBuilder,
+                                        TransactionConfidence confidence,
+                                        Protos.TransactionConfidence.Builder confidenceBuilder) {
+        confidenceBuilder.setType(Protos.TransactionConfidence.Type.valueOf(confidence.getConfidenceType().getValue()));
         if (confidence.getConfidenceType() == ConfidenceType.BUILDING) {
             confidenceBuilder.setAppearedAtHeight(confidence.getAppearedAtChainHeight());
         }
@@ -189,7 +183,6 @@ public class WalletProtobufSerializer {
             Sha256Hash overridingHash = confidence.getOverridingTransaction().getHash();
             confidenceBuilder.setOverridingTransaction(hashToByteString(overridingHash));
         }
-        
         txBuilder.setConfidence(confidenceBuilder);
     }
 
@@ -197,28 +190,26 @@ public class WalletProtobufSerializer {
         return ByteString.copyFrom(hash.getBytes());
     }
 
+    private static Sha256Hash byteStringToHash(ByteString bs) {
+        return new Sha256Hash(bs.toByteArray());
+    }
+
     /**
      * Parses a wallet from the given stream. The stream is expected to contain a binary serialization of a 
-     * {@link Protos.Wallet} object. You must also specify the {@link NetworkParameters} the wallet will use,
-     * it will be checked against the stream to ensure the right params have been specified. In future this
-     * parameter will probably go away.<p>
+     * {@link Protos.Wallet} object.<p>
      *     
      * If the stream is invalid or the serialized wallet contains unsupported features, 
      * {@link IllegalArgumentException} is thrown.
      *
-     * @param input
-     * @param params
-     * @return
-     * @throws IOException
      */
-    public static Wallet readWallet(InputStream input, NetworkParameters params) throws IOException {
+    public static Wallet readWallet(InputStream input) throws IOException {
         // TODO: This method should throw more specific exception types than IllegalArgumentException.
         WalletProtobufSerializer serializer = new WalletProtobufSerializer();
         Protos.Wallet walletProto = Protos.Wallet.parseFrom(input);
-        if (!params.getId().equals(walletProto.getNetworkIdentifier()))
-            throw new IllegalArgumentException("Trying to read a wallet with a different network id " +
-                                                walletProto.getNetworkIdentifier());
-        
+
+        // System.out.println(TextFormat.printToString(walletProto));
+
+        NetworkParameters params = NetworkParameters.fromID(walletProto.getNetworkIdentifier());
         Wallet wallet = new Wallet(params);
         
         // Read all keys
@@ -226,29 +217,24 @@ public class WalletProtobufSerializer {
             if (keyProto.getType() != Protos.Key.Type.ORIGINAL) {
                 throw new IllegalArgumentException("Unknown key type in wallet");
             }
-            if (!keyProto.hasPrivateKey()) {
-                throw new IllegalArgumentException("Don't know how to handle pubkey-only keys");
+            byte[] privKey = null;
+            if (keyProto.hasPrivateKey()) {
+                privKey = keyProto.getPrivateKey().toByteArray();
             }
-            
             byte[] pubKey = keyProto.hasPublicKey() ? keyProto.getPublicKey().toByteArray() : null;
-            ECKey ecKey = new ECKey(keyProto.getPrivateKey().toByteArray(), pubKey);
+            ECKey ecKey = new ECKey(privKey, pubKey);
             ecKey.setCreationTimeSeconds((keyProto.getCreationTimestamp() + 500) / 1000);
             wallet.addKey(ecKey);
         }
         
-        // Read all transactions and create outputs
+        // Read all transactions and insert into the txMap.
         for (Protos.Transaction txProto : walletProto.getTransactionList()) {
             serializer.readTransaction(txProto, params);
         }
 
-        // Create transactions inputs pointing to transactions
-        for (Protos.Transaction txProto : walletProto.getTransactionList()) {
-            serializer.connectTransactionInputs(txProto, params);
-        }
-        
         // Update transaction outputs to point to inputs that spend them
         for (Protos.Transaction txProto : walletProto.getTransactionList()) {
-            WalletTransaction wtx = serializer.connectTransactionOutputs(txProto, params);
+            WalletTransaction wtx = serializer.connectTransactionOutputs(txProto);
             wallet.addWalletTransaction(wtx);
         }
         
@@ -263,71 +249,63 @@ public class WalletProtobufSerializer {
 
 
     private void readTransaction(Protos.Transaction txProto, NetworkParameters params) {
-        Transaction tx = 
-            new Transaction(params, txProto.getVersion(),
-                    new Sha256Hash(txProto.getHash().toByteArray()));
-        if (txProto.hasUpdatedAt())
+        Transaction tx = new Transaction(params);
+        if (txProto.hasUpdatedAt()) {
             tx.setUpdateTime(new Date(txProto.getUpdatedAt()));
+        }
         
-        for (Protos.TransactionOutput outputProto :
-            txProto.getTransactionOutputList()) {
-            TransactionOutput output = new TransactionOutput(params, tx,
-                    BigInteger.valueOf(outputProto.getValue()),
-                    outputProto.getScriptBytes().toByteArray());
+        for (Protos.TransactionOutput outputProto : txProto.getTransactionOutputList()) {
+            BigInteger value = BigInteger.valueOf(outputProto.getValue());
+            byte[] scriptBytes = outputProto.getScriptBytes().toByteArray();
+            TransactionOutput output = new TransactionOutput(params, tx, value, scriptBytes);
             tx.addOutput(output);
         }
 
-        if (txMap.containsKey(ByteString.copyFrom(tx.getHash().getBytes()))) {
-            throw new RuntimeException("Transaction " + tx.getHashAsString() + " appears twice");
-        }
-        
-        for (ByteString blockHash : txProto.getBlockHashList()) {
-            tx.addBlockAppearance(new Sha256Hash(blockHash.toByteArray()));
-        }
-
-        if (txProto.hasLockTime()) {
-            tx.setLockTime(txProto.getLockTime());
-        }
-        
-        txMap.put(txProto.getHash(), tx);
-    }
-
-    private void connectTransactionInputs(Protos.Transaction txProto, NetworkParameters params) {
-        Transaction tx = txMap.get(txProto.getHash());
         for (Protos.TransactionInput transactionInput : txProto.getTransactionInputList()) {
-            TransactionInput input =
-                    new TransactionInput(params, tx,
-                            transactionInput.getScriptBytes().toByteArray(),
-                            new TransactionOutPoint(params,
-                                    transactionInput.getTransactionOutPointIndex(),
-                                    new Sha256Hash(transactionInput.getTransactionOutPointHash().toByteArray())
-                                    )
-                            );
+            byte[] scriptBytes = transactionInput.getScriptBytes().toByteArray();
+            TransactionOutPoint outpoint = new TransactionOutPoint(params,
+                    transactionInput.getTransactionOutPointIndex(),
+                    byteStringToHash(transactionInput.getTransactionOutPointHash())
+            );
+            TransactionInput input = new TransactionInput(params, tx, scriptBytes, outpoint);
             if (transactionInput.hasSequence()) {
                 input.setSequence(transactionInput.getSequence());
             }
             tx.addInput(input);
         }
+
+        for (ByteString blockHash : txProto.getBlockHashList()) {
+            tx.addBlockAppearance(byteStringToHash(blockHash));
+        }
+
+        if (txProto.hasLockTime()) {
+            tx.setLockTime(txProto.getLockTime());
+        }
+
+        // Transaction should now be complete.
+        Sha256Hash protoHash = byteStringToHash(txProto.getHash());
+        Preconditions.checkState(tx.getHash().equals(protoHash),
+                "Transaction did not deserialize completely: %s vs %s", tx.getHash(), protoHash);
+        Preconditions.checkState(!txMap.containsKey(txProto.getHash()),
+                "Wallet contained duplicate transaction %s", byteStringToHash(txProto.getHash()));
+        txMap.put(txProto.getHash(), tx);
     }
 
-    private WalletTransaction connectTransactionOutputs(
-            org.bitcoinj.wallet.Protos.Transaction txProto, NetworkParameters params) {
+    private WalletTransaction connectTransactionOutputs(org.bitcoinj.wallet.Protos.Transaction txProto) {
         Transaction tx = txMap.get(txProto.getHash());
-        WalletTransaction.Pool pool =
-                WalletTransaction.Pool.valueOf(txProto.getPool().getNumber());
+        WalletTransaction.Pool pool = WalletTransaction.Pool.valueOf(txProto.getPool().getNumber());
         for (int i = 0 ; i < tx.getOutputs().size() ; i++) {
             TransactionOutput output = tx.getOutputs().get(i);
-            final Protos.TransactionOutput transactionOutput =
-                    txProto.getTransactionOutput(i);
+            final Protos.TransactionOutput transactionOutput = txProto.getTransactionOutput(i);
             if (transactionOutput.hasSpentByTransactionHash()) {
-                Transaction spendingTx =
-                    txMap.get(transactionOutput.getSpentByTransactionHash());
+                Transaction spendingTx = txMap.get(transactionOutput.getSpentByTransactionHash());
                 final int spendingIndex = transactionOutput.getSpentByTransactionIndex();
-                output.markAsSpent(spendingTx.getInputs().get(spendingIndex));
+                TransactionInput input = spendingTx.getInputs().get(spendingIndex);
+                input.connect(output);
             }
         }
         
-        if(txProto.hasConfidence()) {
+        if (txProto.hasConfidence()) {
             Protos.TransactionConfidence confidenceProto = txProto.getConfidence();
             TransactionConfidence confidence = tx.getConfidence();
             readConfidence(tx, confidenceProto, confidence);

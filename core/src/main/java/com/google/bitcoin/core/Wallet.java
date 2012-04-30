@@ -19,6 +19,7 @@ package com.google.bitcoin.core;
 import com.google.bitcoin.core.ScriptException;
 import com.google.bitcoin.core.Transaction;
 import com.google.bitcoin.core.WalletTransaction.Pool;
+import com.google.bitcoin.store.WalletProtobufSerializer;
 import com.google.bitcoin.utils.EventListenerInvoker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -175,7 +176,8 @@ public class Wallet implements Serializable {
     }
 
     /**
-     * Uses Java serialization to save the wallet to the given file.
+     * Uses protobuf serialization to save the wallet to the given file. To learn more about this file format, see
+     * {@link WalletProtobufSerializer}.
      */
     public synchronized void saveToFile(File f) throws IOException {
         FileOutputStream stream = null;
@@ -188,12 +190,11 @@ public class Wallet implements Serializable {
     }
 
     /**
-     * Uses Java serialization to save the wallet to the given file stream.
+     * Uses protobuf serialization to save the wallet to the given file stream. To learn more about this file format, see
+     * {@link WalletProtobufSerializer}.
      */
     public synchronized void saveToFileStream(OutputStream f) throws IOException {
-        ObjectOutputStream oos = new ObjectOutputStream(f);
-        oos.writeObject(this);
-        oos.close();
+        WalletProtobufSerializer.writeWallet(this, f);
     }
 
     /** Returns the parameters this wallet was created with. */
@@ -215,22 +216,36 @@ public class Wallet implements Serializable {
         pendingInactive.addAll(pending.values());
         pendingInactive.addAll(inactive.values());
         
-        return getTransactions(true, true).size() ==
-               unspent.size() + spent.size() + pendingInactive.size() + dead.size();
+        int size1 = getTransactions(true, true).size();
+        int size2 = unspent.size() + spent.size() + pendingInactive.size() + dead.size();
+        if (size1 != size2) {
+            log.error("Inconsistent wallet sizes: {} {}", size1, size2);
+        }
+        return size1 == size2;
     }
 
     /**
      * Returns a wallet deserialized from the given input stream.
      */
-    public static Wallet loadFromFileStream(InputStream f) throws IOException {
-        ObjectInputStream ois = null;
-        try {
-            ois = new ObjectInputStream(f);
-            return (Wallet) ois.readObject();
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
-        } finally {
-            if (ois != null) ois.close();
+    public static Wallet loadFromFileStream(InputStream stream) throws IOException {
+        // Determine what kind of wallet stream this is: Java Serialization or protobuf format.
+        stream = new BufferedInputStream(stream);
+        stream.mark(100);
+        boolean serialization = stream.read() == 0xac && stream.read() == 0xed;
+        stream.reset();
+
+        if (serialization) {
+            ObjectInputStream ois = null;
+            try {
+                ois = new ObjectInputStream(stream);
+                return (Wallet) ois.readObject();
+            } catch (ClassNotFoundException e) {
+                throw new RuntimeException(e);
+            } finally {
+                if (ois != null) ois.close();
+            }
+        } else {
+            return WalletProtobufSerializer.readWallet(stream);
         }
     }
 
@@ -596,10 +611,10 @@ public class Wallet implements Serializable {
         List<TransactionInput> inputs = tx.getInputs();
         for (int i = 0; i < inputs.size(); i++) {
             TransactionInput input = inputs.get(i);
-            TransactionInput.ConnectionResult result = input.connect(unspent, false);
+            TransactionInput.ConnectionResult result = input.connect(unspent, TransactionInput.ConnectMode.ABORT_ON_CONFLICT);
             if (result == TransactionInput.ConnectionResult.NO_SUCH_TX) {
                 // Not found in the unspent map. Try again with the spent map.
-                result = input.connect(spent, false);
+                result = input.connect(spent, TransactionInput.ConnectMode.ABORT_ON_CONFLICT);
                 if (result == TransactionInput.ConnectionResult.NO_SUCH_TX) {
                     // Doesn't spend any of our outputs or is coinbase.
                     continue;
@@ -615,10 +630,8 @@ public class Wallet implements Serializable {
                 checkNotNull(doubleSpent);
                 int index = (int) input.getOutpoint().getIndex();
                 TransactionOutput output = doubleSpent.getOutputs().get(index);
-                TransactionInput spentBy = output.getSpentBy();
-                checkNotNull(spentBy);
-                Transaction connected = spentBy.getParentTransaction();
-                checkNotNull(connected);
+                TransactionInput spentBy = checkNotNull(output.getSpentBy());
+                Transaction connected = checkNotNull(spentBy.getParentTransaction());
                 if (fromChain) {
                     // This must have overridden a pending tx, or the block is bad (contains transactions
                     // that illegally double spend: should never occur if we are connected to an honest node).
@@ -628,7 +641,7 @@ public class Wallet implements Serializable {
                         pending.remove(connected.getHash());
                         dead.put(connected.getHash(), connected);
                         // Now forcibly change the connection.
-                        input.connect(unspent, true);
+                        input.connect(unspent, TransactionInput.ConnectMode.DISCONNECT_ON_CONFLICT);
                         // Inform the [tx] event listeners of the newly dead tx. This sets confidence type also.
                         connected.getConfidence().setOverridingTransaction(tx);
                         invokeOnTransactionConfidenceChanged(connected);
@@ -646,7 +659,7 @@ public class Wallet implements Serializable {
                 // Otherwise we saw a transaction spend our coins, but we didn't try and spend them ourselves yet.
                 // The outputs are already marked as spent by the connect call above, so check if there are any more for
                 // us to use. Move if not.
-                Transaction connected = input.getOutpoint().fromTx;
+                Transaction connected = checkNotNull(input.getOutpoint().fromTx);
                 maybeMoveTxToSpent(connected, "prevtx");
             }
         }
@@ -1495,7 +1508,7 @@ public class Wallet implements Serializable {
                 noSuchTx++;
                 continue;
             }
-            TransactionInput.ConnectionResult result = input.connect(pool, false);
+            TransactionInput.ConnectionResult result = input.connect(pool, TransactionInput.ConnectMode.ABORT_ON_CONFLICT);
             if (result == TransactionInput.ConnectionResult.SUCCESS) {
                 success++;
             } else if (result == TransactionInput.ConnectionResult.NO_SUCH_TX) {
@@ -1574,7 +1587,7 @@ public class Wallet implements Serializable {
     private transient PeerEventListener peerEventListener;
 
     /**
-     * Use the returned object can be used to connect the wallet to a {@link Peer} or {@link PeerGroup} in order to
+     * The returned object can be used to connect the wallet to a {@link Peer} or {@link PeerGroup} in order to
      * receive and process blocks and transactions.
      */
     public synchronized PeerEventListener getPeerEventListener() {
