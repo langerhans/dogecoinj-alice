@@ -29,7 +29,7 @@
     <artifactId>bitcoinj</artifactId>
 
     <name>BitCoinJ</name>
-    <description>A Java Bitcoin library</description>
+    <description>A Java Bitcoin library </description>
 
     <profiles>
         <profile>

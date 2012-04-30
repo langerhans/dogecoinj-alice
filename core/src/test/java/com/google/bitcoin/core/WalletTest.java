@@ -614,6 +614,64 @@ public class WalletTest {
         WalletProtobufSerializer.writeWallet(wallet, bios);
 
     }
+    
+    /**
+     * Test that a spend from a wallet to the same wallet is received ok
+     * (This is a bit daft to do as all it does is burn a fee and shuffle BTC around but it is perfectly valid)
+     */
+    @Test
+    public void sendToOwnWallet() throws Exception {
+        final BigInteger nanos = Utils.toNanoCoins(1, 0);
+        final Transaction t1 = createFakeTx(params, nanos, myAddress);
+
+        // First one is "called" second is "pending".
+        final boolean[] flags = new boolean[2];
+        final Transaction[] notifiedTx = new Transaction[1];
+        wallet.addEventListener(new AbstractWalletEventListener() {
+            @Override
+            public void onCoinsReceived(Wallet wallet, Transaction tx, BigInteger prevBalance, BigInteger newBalance) {
+                // Check we got the expected transaction.
+                assertEquals(tx, t1);
+                // Check that it's considered to be pending inclusion in the block chain.
+                assertEquals(prevBalance, BigInteger.ZERO);
+                assertEquals(newBalance, nanos);
+                flags[0] = true;
+                flags[1] = tx.isPending();
+                notifiedTx[0] = tx;
+            }
+        });
+
+        wallet.receivePending(t1);
+        assertTrue(flags[0]);
+        assertTrue(flags[1]);   // is pending
+        flags[0] = false;
+        // Check we don't get notified if we receive it again.
+        wallet.receivePending(t1);
+        assertFalse(flags[0]);
+        // Now check again, that we should NOT be notified when we receive it via a block (we were already notified).
+        // However the confidence should be updated.
+        // Make a fresh copy of the tx to ensure we're testing realistically.
+        flags[0] = flags[1] = false;
+        notifiedTx[0].getConfidence().addEventListener(new TransactionConfidence.Listener() {
+            public void onConfidenceChanged(Transaction tx) {
+                flags[1] = true;
+            }
+        });
+        assertEquals(TransactionConfidence.ConfidenceType.NOT_SEEN_IN_CHAIN,
+                notifiedTx[0].getConfidence().getConfidenceType());
+        final Transaction t1Copy = new Transaction(params, t1.bitcoinSerialize());
+        wallet.receiveFromBlock(t1Copy, createFakeBlock(params, blockStore, t1Copy).storedBlock,
+                BlockChain.NewBlockType.BEST_CHAIN);
+        assertFalse(flags[0]);
+        assertTrue(flags[1]);
+        assertEquals(TransactionConfidence.ConfidenceType.BUILDING, notifiedTx[0].getConfidence().getConfidenceType());
+        // Check we don't get notified about an irrelevant transaction.
+        flags[0] = false;
+        flags[1] = false;
+        Transaction irrelevant = createFakeTx(params, nanos, new ECKey().toAddress(params));
+        wallet.receivePending(irrelevant);
+        assertFalse(flags[0]);
+    }
 
     // Support for offline spending is tested in PeerGroupTest
 }
