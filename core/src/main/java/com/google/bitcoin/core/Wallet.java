@@ -447,9 +447,11 @@ public class Wallet implements Serializable {
         // If the transaction is already in our spent or unspent or there is no money in it it is probably
         // due to a block replay so we do not want to do anything with it
         // if it is on a sidechain then let the ELSE below deal with it
+        // if it is a double spend it gets processed later
+        Transaction doubleSpend = findDoubleSpendAgainstPending(tx);
         boolean alreadyHaveIt = spent.containsKey(tx.getHash()) || unspent.containsKey(tx.getHash());
         boolean noMoneyInItAndNotMine = BigInteger.ZERO.equals(valueSentFromMe) && BigInteger.ZERO.equals(valueSentToMe) && !tx.isMine(this);
-        if (bestChain &&(alreadyHaveIt || noMoneyInItAndNotMine)) {
+        if (bestChain && (doubleSpend == null) && (alreadyHaveIt || noMoneyInItAndNotMine)) {
             log.info("Already have tx " + tx.getHash() + " in spent/ unspent or there is no money in it and it is not mine so ignoring");
             return;
         }
@@ -502,7 +504,7 @@ public class Wallet implements Serializable {
             } else if (bestChain) {
                 // This can trigger tx confidence listeners to be run in the case of double spends. We may need to
                 // delay the execution of the listeners until the bottom to avoid the wallet mutating during updates.
-                processTxFromBestChain(tx);
+                processTxFromBestChain(tx, doubleSpend);
             }
         }
 
@@ -551,7 +553,7 @@ public class Wallet implements Serializable {
      * Handle when a transaction becomes newly active on the best chain, either due to receiving a new block or a
      * re-org making inactive transactions active.
      */
-    private void processTxFromBestChain(Transaction tx) throws VerificationException, ScriptException {
+    private void processTxFromBestChain(Transaction tx, Transaction doubleSpend) throws VerificationException, ScriptException {
         // This TX may spend our existing outputs even though it was not pending. This can happen in unit
         // tests, if keys are moved between wallets, and if we're catching up to the chain given only a set of keys.
         updateForSpends(tx, true);
@@ -565,33 +567,38 @@ public class Wallet implements Serializable {
             log.info("  new tx ->spent");
             boolean alreadyPresent = spent.put(tx.getHash(), tx) != null;
             checkState(!alreadyPresent, "TX was received twice");
-        } else if (tx.isMine(this)) {
-            // a transaction that does not spend or send us coins but is ours none the less
-            // this can occur when a transaction is sent from outputs in our wallet to
-            // an address in the wallet - it burns a fee but is valid
-            log.info(" new tx -> spent (transfer within wallet - simply burns fee)");
-            boolean alreadyPresent = spent.put(tx.getHash(), tx) != null;
-            assert !alreadyPresent : "TX was received twice (transfer within wallet - simply burns fee";
-            invokeOnTransactionConfidenceChanged(tx);
         } else {
             // It didn't send us coins nor spend any of our coins. If we're processing it, that must be because it
             // spends outpoints that are also spent by some pending transactions - maybe a double spend of somebody
             // elses coins that were originally sent to us? ie, this might be a Finney attack where we think we
             // received some money and then the sender co-operated with a miner to take back the coins, using a tx
             // that isn't involving our keys at all.
-            Transaction doubleSpend = findDoubleSpendAgainstPending(tx);
-            if (doubleSpend == null)
-                throw new IllegalStateException("Received an irrelevant tx that was not a double spend.");
-            // This is mostly the same as the codepath in updateForSpends, but that one is only triggered when
-            // the transaction being double spent is actually in our wallet (ie, maybe we're double spending).
-            log.warn("Saw double spend from chain override pending tx {}", doubleSpend.getHashAsString());
-            log.warn("  <-pending ->dead");
-            pending.remove(doubleSpend.getHash());
-            dead.put(doubleSpend.getHash(), doubleSpend);
-            // Inform the event listeners of the newly dead tx.
-            doubleSpend.getConfidence().setOverridingTransaction(tx);
-            invokeOnTransactionConfidenceChanged(doubleSpend);
-        }
+        	// (it can also be an intra-wallet spend - see tx.isMine() call below)
+        	
+            if (doubleSpend != null) {
+                // This is mostly the same as the codepath in updateForSpends, but that one is only triggered when
+                // the transaction being double spent is actually in our wallet (ie, maybe we're double spending).
+                log.warn("Saw double spend from chain override pending tx {}", doubleSpend.getHashAsString());
+                log.warn("  <-pending ->dead");
+                pending.remove(doubleSpend.getHash());
+                dead.put(doubleSpend.getHash(), doubleSpend);
+                // Inform the event listeners of the newly dead tx.
+                doubleSpend.getConfidence().setOverridingTransaction(tx);
+                invokeOnTransactionConfidenceChanged(doubleSpend);
+            } else {
+            	if (tx.isMine(this)) {
+                     // a transaction that does not spend or send us coins but is ours none the less
+                     // this can occur when a transaction is sent from outputs in our wallet to
+                     // an address in the wallet - it burns a fee but is valid
+                     log.info(" new tx -> spent (transfer within wallet - simply burns fee)");
+                     boolean alreadyPresent = spent.put(tx.getHash(), tx) != null;
+                     assert !alreadyPresent : "TX was received twice (transfer within wallet - simply burns fee";
+                     invokeOnTransactionConfidenceChanged(tx);
+                } else {
+                    throw new IllegalStateException("Received an irrelevant tx that was not a double spend.");
+                }
+            }
+         }
     }
 
     /**

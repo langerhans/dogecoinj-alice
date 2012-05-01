@@ -240,31 +240,46 @@ public class PeerTest extends TestWithNetworkConnections {
     // Check that it starts downloading the block chain correctly on request.
     @Test
     public void startBlockChainDownload() throws Exception {
+    	System.out.println("PeerTest - ping1");
         PeerEventListener listener = control.createMock(PeerEventListener.class);
         peer.addEventListener(listener);
+    	System.out.println("PeerTest - ping2");
 
         Block b1 = TestUtils.createFakeBlock(unitTestParams, blockStore).block;
         blockChain.add(b1);
+    	System.out.println("PeerTest - ping3");
         Block b2 = TestUtils.makeSolvedTestBlock(unitTestParams, b1);
         blockChain.add(b2);
+    	System.out.println("PeerTest - ping4");
         conn.setVersionMessageForHeight(unitTestParams, 100);
+    	System.out.println("PeerTest - ping5");
 
         listener.onChainDownloadStarted(peer, 98);
+    	System.out.println("PeerTest - ping6");
         expectLastCall();
+    	System.out.println("PeerTest - ping7");
 
         control.replay();
+    	System.out.println("PeerTest - ping8");
         peer.startBlockChainDownload();
+    	System.out.println("PeerTest - ping9");
         runPeer(peer, conn);
+    	System.out.println("PeerTest - ping10");
         control.verify();
+    	System.out.println("PeerTest - ping11");
         
         List<Sha256Hash> expectedLocator = new ArrayList<Sha256Hash>();
         expectedLocator.add(b2.getHash());
         expectedLocator.add(b1.getHash());
         expectedLocator.add(unitTestParams.genesisBlock.getHash());
+    	System.out.println("PeerTest - ping12");
 
         GetBlocksMessage message = (GetBlocksMessage) conn.popOutbound();
+    	System.out.println("PeerTest - ping13");
         assertEquals(message.getLocator(), expectedLocator);
+    	System.out.println("PeerTest - ping14");
         assertEquals(message.getStopHash(), Sha256Hash.ZERO_HASH);
+    	System.out.println("PeerTest - ping15");
     }
 
     @Test
