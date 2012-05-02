@@ -29,6 +29,7 @@ import org.bouncycastle.util.encoders.Hex;
 import org.junit.Test;
 
 import com.google.bitcoin.core.BlockChain.NewBlockType;
+import com.google.bitcoin.core.Wallet.BalanceType;
 
 /**
  * Test that coinbase transactions are dealt with properly
@@ -58,6 +59,7 @@ public class CoinBaseBlockTest {
         // Create block 169482
         Block block = new Block(params, Hex.decode(blockAsHex));
 
+        // Check block
         assertNotNull(block);
         block.verify();
         assertEquals(BLOCK_NONCE, block.getNonce());
@@ -80,10 +82,19 @@ public class CoinBaseBlockTest {
         assertNotNull(transactions);
         wallet.receiveFromBlock(transactions.get(0), storedBlock, NewBlockType.BEST_CHAIN);
         
+        // Coinbase transaction should have been received successfully but be unavailable to spend (too young)
         assertEquals(BALANCE_AFTER_BLOCK, wallet.getBalance());
+        assertEquals(BigInteger.ZERO, wallet.getBalance(BalanceType.AVAILABLE));
+        
+        // Go forward another NUMBER_OF_BLOCKS_COINBASE_TRANSACTIONS_ARE_UNAVAIALBLE_FOR_SPEND - 1 blocks.
+        // The coinbase BTC should still be unavailable to spend
+        // assertEquals(BigInteger.ZERO, wallet.getBalance(BalanceType.AVAILABLE));
+
+        // But after another block, you can spend it
+        //assertEquals(BALANCE_AFTER_BLOCK, wallet.getBalance(BalanceType.AVAILABLE));
     }
-    
-    /** Read the contents of the given file. */
+ 
+    /** Read the contents of the given inputStream. */
     private String read(InputStream inputStream) throws IOException {;
       StringBuilder text = new StringBuilder();
       String newLine = System.getProperty("line.separator");

@@ -40,6 +40,8 @@ public class BlockChainTest {
     private Address coinbaseTo;
     private NetworkParameters unitTestParams;
     private final StoredBlock[] block = new StoredBlock[1];
+    
+    private static final int NUMBER_OF_BLOCKS_UNTIL_COINBASE_TRANSACTIONS_ARE_AVAIALBLE_FOR_SPEND = 120;
 
     private void resetBlockStore() {
         blockStore = new MemoryBlockStore(unitTestParams);
@@ -63,7 +65,6 @@ public class BlockChainTest {
         chain = new BlockChain(unitTestParams, wallet, blockStore);
 
         coinbaseTo = wallet.keychain.get(0).toAddress(unitTestParams);
-
     }
 
     @Test
@@ -250,6 +251,43 @@ public class BlockChainTest {
         b1.solve();
         chain.add(b1);
         assertEquals(BigInteger.ZERO, wallet.getBalance());
+    }
+    
+    @Test
+    public void testCoinbaseTransactionAvailability() throws Exception {
+    	// Check that a coinbase transaction is only available after NUMBER_OF_BLOCKS_UNTIL_COINBASE_TRANSACTIONS_ARE_AVAIALBLE_FOR_SPEND blocks
+    	
+    	// Create a block, sending the coinbase to the coinbaseTo address (which is in the wallet)
+        Block b1 = unitTestParams.genesisBlock.createNextBlock(coinbaseTo);
+        chain.add(b1);
+
+        // The coinbase tx is not yet available to spend
+        assertTrue(wallet.getBalance().compareTo(BigInteger.ZERO) == 0);
+
+        // Check that the coinbase is unavailable to spend for the next NUMBER_OF_BLOCKS_UNTIL_COINBASE_TRANSACTIONS_ARE_AVAIALBLE_FOR_SPEND - 1 blocks
+        for (int i = 0; i < NUMBER_OF_BLOCKS_UNTIL_COINBASE_TRANSACTIONS_ARE_AVAIALBLE_FOR_SPEND - 1; i++) {
+        	// non relevant tx - just for fake block creation
+            Transaction tx2 = createFakeTx(unitTestParams, Utils.toNanoCoins(1, 0),
+                    new ECKey().toAddress(unitTestParams));
+
+            Block b2 = createFakeBlock(unitTestParams, blockStore, tx2).block;
+            chain.add(b2);
+            
+            // wallet still does not have the coinbase transaction available for spend
+            assertTrue(wallet.getBalance().compareTo(BigInteger.ZERO) == 0);
+        }
+
+        // give it one more block - should now be able to spend coinbase transaction
+        
+    	// non relevant tx
+        Transaction tx3 = createFakeTx(unitTestParams, Utils.toNanoCoins(1, 0),
+                new ECKey().toAddress(unitTestParams));
+
+        Block b3 = createFakeBlock(unitTestParams, blockStore, tx3).block;
+        chain.add(b3);
+        
+        // wallet now has the coinbase transaction available for spend
+        assertTrue(wallet.getBalance().compareTo( Utils.toNanoCoins(50, 0)) == 0);
     }
 
     // Some blocks from the test net.
