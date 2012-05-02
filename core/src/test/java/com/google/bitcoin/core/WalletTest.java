@@ -604,5 +604,34 @@ public class WalletTest {
 
     }
     
+    @Test
+    public void testSpendToSameWallet() throws Exception {
+    	// Test that a spend to the same wallet is dealt with correctly
+    	// It should appear in the wallet and confirm 
+    	// This is a bit of a silly thing to do in the real world as all it does is burn a fee but it is perfectly valid
+
+    	BigInteger coin1 = Utils.toNanoCoins(1, 0);
+        BigInteger coinHalf = Utils.toNanoCoins(0, 50);
+        
+        // Start by giving us 1 coin.
+        Transaction inbound1 = createFakeTx(params, coin1, myAddress);
+        wallet.receiveFromBlock(inbound1, null, BlockChain.NewBlockType.BEST_CHAIN);
+        
+        // Send half to ourselves. We should then have a balance available to spend of zero
+        assertEquals(1, wallet.getPoolSize(WalletTransaction.Pool.UNSPENT));
+        assertEquals(1, wallet.getPoolSize(WalletTransaction.Pool.ALL));
+        
+        Transaction outbound1 = wallet.createSend(myAddress, coinHalf);
+        wallet.commitTx(outbound1);
+        
+        // we should have a zero available balance before the next block
+        assertEquals(BigInteger.ZERO, wallet.getBalance());
+        
+        wallet.receiveFromBlock(outbound1, null, BlockChain.NewBlockType.BEST_CHAIN);
+
+        // we should have a balance of 1 BTC after the block is received
+        assertEquals(coin1, wallet.getBalance());
+    }
+    
     // Support for offline spending is tested in PeerGroupTest
 }
