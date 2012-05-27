@@ -25,9 +25,7 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.net.SocketException;
 import java.util.Date;
-import java.util.LinkedHashMap;
 
 /**
  * A {@code TCPNetworkConnection} is used for connecting to a Bitcoin node over the standard TCP/IP protocol.<p>
@@ -48,8 +46,6 @@ public class TCPNetworkConnection implements NetworkConnection {
     private final NetworkParameters params;
     private VersionMessage versionMessage;
 
-    // Given to the BitcoinSerializer to de-duplicate messages.
-    private static final LinkedHashMap<Sha256Hash, Integer> dedupeList = BitcoinSerializer.createDedupeList();
     private BitcoinSerializer serializer = null;
 
     private VersionMessage myVersionMessage;
@@ -62,13 +58,11 @@ public class TCPNetworkConnection implements NetworkConnection {
      * @param peerAddress address to connect to. IPv6 is not currently supported by BitCoin.  If
      * port is not positive the default port from params is used.
      * @param params Defines which network to connect to and details of the protocol.
-     * @param connectTimeoutMsec Timeout in milliseconds when initially connecting to peer
-     * @param dedupe Whether to avoid parsing duplicate messages from the network (ie from other peers).
      * @param ver The VersionMessage to announce to the other side of the connection.
      * @throws IOException if there is a network related failure.
      * @throws ProtocolException if the version negotiation failed.
      */
-    public TCPNetworkConnection(NetworkParameters params, boolean dedupe, VersionMessage ver)
+    public TCPNetworkConnection(NetworkParameters params, VersionMessage ver)
             throws IOException, ProtocolException {
         this.params = params;
         this.myVersionMessage = ver;
@@ -76,12 +70,25 @@ public class TCPNetworkConnection implements NetworkConnection {
         socket = new Socket();
 
         // So pre-Feb 2012, update checkumming property after version is read.
-        this.serializer = new BitcoinSerializer(this.params, false, dedupe ? dedupeList : null);
+        this.serializer = new BitcoinSerializer(this.params, false);
         this.serializer.setUseChecksumming(Utils.now().after(checksummingProtocolChangeDate));
     }
 
-    public void connect(PeerAddress peerAddress, int connectTimeoutMsec)
+    /**
+     * Connect to the given IP address using the port specified as part of the network parameters. Once construction
+     * is complete a functioning network channel is set up and running.
+     *
+     * @param params Defines which network to connect to and details of the protocol.
+     * @param bestHeight The height of the best chain we know about, sent to the other side.
+     * @throws IOException if there is a network related failure.
+     * @throws ProtocolException if the version negotiation failed.
+     */
+    public TCPNetworkConnection(NetworkParameters params, int bestHeight)
             throws IOException, ProtocolException {
+        this(params, new VersionMessage(params, bestHeight));
+    }
+
+    public void connect(PeerAddress peerAddress, int connectTimeoutMsec) throws IOException, ProtocolException {
         remoteIp = peerAddress.getAddr();
         int port = (peerAddress.getPort() > 0) ? peerAddress.getPort() : this.params.port;
 
@@ -120,8 +127,10 @@ public class TCPNetworkConnection implements NetworkConnection {
                 versionMessage.bestHeight
         });
         // BitCoinJ is a client mode implementation. That means there's not much point in us talking to other client
-        // mode nodes because we can't download the data from them we need to find/verify transactions.
-        if (!versionMessage.hasBlockChain()) {
+        // mode nodes because we can't download the data from them we need to find/verify transactions. Some bogus
+        // implementations claim to have a block chain in their services field but then report a height of zero, filter
+        // them out here.
+        if (!versionMessage.hasBlockChain() || versionMessage.bestHeight <= 0) {
             // Shut down the socket
             try {
                 shutdown();
@@ -134,31 +143,6 @@ public class TCPNetworkConnection implements NetworkConnection {
         serializer.setUseChecksumming(peerVersion >= 209);
         // Handshake is done!
     }
-
-    /**
-     * Connect to the given IP address using the port specified as part of the network parameters. Once construction
-     * is complete a functioning network channel is set up and running.
-     *
-     * @param peerAddress address to connect to. IPv6 is not currently supported by BitCoin.  If
-     * port is not positive the default port from params is used.
-     * @param params Defines which network to connect to and details of the protocol.
-     * @param connectTimeoutMsec Timeout in milliseconds when initially connecting to peer
-     * @param dedupe Whether to avoid parsing duplicate messages from the network (ie from other peers).
-     * @param bestHeight The height of the best chain we know about, sent to the other side.
-     * @throws IOException if there is a network related failure.
-     * @throws ProtocolException if the version negotiation failed.
-     */
-    public TCPNetworkConnection(NetworkParameters params,
-                                int bestHeight, boolean dedupe)
-            throws IOException, ProtocolException {
-        this(params, dedupe, new VersionMessage(params, bestHeight));
-    }
-
-    public TCPNetworkConnection(NetworkParameters params, int bestHeight)
-            throws IOException, ProtocolException {
-        this(params, bestHeight, true);
-    }
-
 
     public void ping() throws IOException {
         writeMessage(new Ping());

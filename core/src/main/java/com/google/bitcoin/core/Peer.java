@@ -148,7 +148,7 @@ public class Peer {
      */
     public synchronized void connect() throws PeerException {
         try {
-            conn = new TCPNetworkConnection(params, false, versionMessage);
+            conn = new TCPNetworkConnection(params, versionMessage);
             conn.connect(address, CONNECT_TIMEOUT_MSEC);
         } catch (IOException ex) {
             throw new PeerException(ex);
@@ -333,6 +333,10 @@ public class Peer {
                         return;
                     }
                 }
+            }
+            if (!downloadData) {
+                log.warn("Received block we did not ask for: {}", m.getHashAsString());
+                return;
             }
             // Otherwise it's a block sent to us because the peer thought we needed it, so add it to the block chain.
             // This call will synchronize on blockChain.

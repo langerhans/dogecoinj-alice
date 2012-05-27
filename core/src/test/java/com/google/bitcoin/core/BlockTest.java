@@ -16,8 +16,8 @@
 
 package com.google.bitcoin.core;
 
-import org.bouncycastle.util.encoders.Hex;
 import org.junit.Test;
+import org.spongycastle.util.encoders.Hex;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -31,7 +31,7 @@ import static org.junit.Assert.*;
 public class BlockTest {
     static final NetworkParameters params = NetworkParameters.testNet();
 
-    static final byte[] blockBytes;
+    public static final byte[] blockBytes;
 
     static {
         // Block 00000000a6e5eb79dcec11897af55e90cd571a4335383a3ccfbc12ec81085935

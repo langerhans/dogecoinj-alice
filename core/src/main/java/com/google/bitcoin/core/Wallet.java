@@ -21,6 +21,7 @@ import com.google.bitcoin.core.Transaction;
 import com.google.bitcoin.core.WalletTransaction.Pool;
 import com.google.bitcoin.store.WalletProtobufSerializer;
 import com.google.bitcoin.utils.EventListenerInvoker;
+import com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -146,6 +147,11 @@ public class Wallet implements Serializable {
     // this field) then we need to migrate.
     private boolean hasTransactionConfidences;
 
+    /**
+     * The hash of the last block seen on the best chain
+     */
+    private Sha256Hash lastBlockSeenHash;
+
     transient private ArrayList<WalletEventListener> eventListeners;
 
     /**
@@ -177,15 +183,29 @@ public class Wallet implements Serializable {
 
     /**
      * Uses protobuf serialization to save the wallet to the given file. To learn more about this file format, see
-     * {@link WalletProtobufSerializer}.
+     * {@link WalletProtobufSerializer}. Writes out first to a temporary file in the same directory and then renames
+     * once written.
      */
     public synchronized void saveToFile(File f) throws IOException {
+        Preconditions.checkArgument(f.isFile());
         FileOutputStream stream = null;
+        File temp = null;
         try {
-            stream = new FileOutputStream(f);
+            File directory = f.getParentFile();
+            temp = File.createTempFile("wallet", null, directory);
+            stream = new FileOutputStream(temp);
             saveToFileStream(stream);
         } finally {
-            if (stream != null) stream.close();
+            if (stream != null) {
+                // Attempt to force the bits to hit the disk. In reality the OS or hard disk itself may still decide
+                // to not write through to physical media for at least a few seconds, but this is the best we can do.
+                stream.flush();
+                stream.getFD().sync();
+                stream.close();
+                if (!temp.renameTo(f)) {
+                    throw new IOException("Failed to rename " + temp + " to " + f);
+                }
+            }
         }
     }
 
@@ -210,18 +230,48 @@ public class Wallet implements Serializable {
         return loadFromFileStream(new FileInputStream(f));
     }
     
-    private boolean isConsistent() {
+    public boolean isConsistent() {
+        boolean success = true;
         // Pending and inactive can overlap, so merge them before counting
         HashSet<Transaction> pendingInactive = new HashSet<Transaction>();
         pendingInactive.addAll(pending.values());
         pendingInactive.addAll(inactive.values());
         
-        int size1 = getTransactions(true, true).size();
+        Set<Transaction> transactions = getTransactions(true, true);
+        
+        Set<Sha256Hash> hashes = new HashSet<Sha256Hash>();
+        for (Transaction tx : transactions) {
+            hashes.add(tx.getHash());
+        }
+        
+        int size1 = transactions.size();
+        
+        if (size1 != hashes.size()) {
+            log.error("Two transactions with same hash");
+            success = false;
+        }
+        
         int size2 = unspent.size() + spent.size() + pendingInactive.size() + dead.size();
         if (size1 != size2) {
             log.error("Inconsistent wallet sizes: {} {}", size1, size2);
+            success = false;
         }
-        return size1 == size2;
+        
+        for (Transaction tx : unspent.values()) {
+            if (!tx.isConsistent(this, false)) {
+                success = false;
+                log.error("Inconsistent unspent tx {}", tx.getHashAsString());
+            }
+        }
+        
+        for (Transaction tx : spent.values()) {
+            if (!tx.isConsistent(this, true)) {
+                success = false;
+                log.error("Inconsistent spent tx {}", tx.getHashAsString());
+            }
+        }
+        
+        return success;
     }
 
     /**
@@ -234,19 +284,26 @@ public class Wallet implements Serializable {
         boolean serialization = stream.read() == 0xac && stream.read() == 0xed;
         stream.reset();
 
+        Wallet wallet;
+        
         if (serialization) {
             ObjectInputStream ois = null;
             try {
                 ois = new ObjectInputStream(stream);
-                return (Wallet) ois.readObject();
+                wallet = (Wallet) ois.readObject();
             } catch (ClassNotFoundException e) {
                 throw new RuntimeException(e);
             } finally {
                 if (ois != null) ois.close();
             }
         } else {
-            return WalletProtobufSerializer.readWallet(stream);
+            wallet = WalletProtobufSerializer.readWallet(stream);
         }
+        
+        if (!wallet.isConsistent()) {
+            log.error("Loaded an inconsistent wallet");
+        }
+        return wallet;
     }
 
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
@@ -510,6 +567,18 @@ public class Wallet implements Serializable {
 
         log.info("Balance is now: " + bitcoinValueToFriendlyString(getBalance()));
 
+        // Store the block hash
+        if (bestChain) {
+            if (block != null && block.getHeader() != null) {
+                // Check to see if this block has been seen before
+                Sha256Hash newBlockHash = block.getHeader().getHash();
+                if (!newBlockHash.equals(getLastBlockSeenHash())) {
+                    // new hash
+                    setLastBlockSeenHash(newBlockHash);
+                }
+            }
+        }
+
         // WARNING: The code beyond this point can trigger event listeners on transaction confidence objects, which are
         // in turn allowed to re-enter the Wallet. This means we cannot assume anything about the state of the wallet
         // from now on. The balance just received may already be spent.
@@ -680,8 +749,8 @@ public class Wallet implements Serializable {
             // There's nothing left I can spend in this transaction.
             if (unspent.remove(tx.getHash()) != null) {
                 if (log.isInfoEnabled()) {
-                    log.info("  " + context + " <-unspent");
-                    log.info("  " + context + " ->spent");
+                    log.info("  {} {} <-unspent", tx.getHashAsString(), context);
+                    log.info("  {} {} ->spent", tx.getHashAsString(), context);
                 }
                 spent.put(tx.getHash(), tx);
             }
@@ -1422,13 +1491,13 @@ public class Wallet implements Serializable {
         for (Transaction tx : commonChainTransactions.values()) {
             int unspentOutputs = 0;
             for (TransactionOutput output : tx.getOutputs()) {
-                if (output.isAvailableForSpending()) unspentOutputs++;
+                if (output.isAvailableForSpending() && output.isMine(this)) unspentOutputs++;
             }
             if (unspentOutputs > 0) {
-                log.info("  TX {}: ->unspent", tx.getHashAsString());
+                log.info("  TX {} ->unspent", tx.getHashAsString());
                 unspent.put(tx.getHash(), tx);
             } else {
-                log.info("  TX {}: ->spent", tx.getHashAsString());
+                log.info("  TX {} ->spent", tx.getHashAsString());
                 spent.put(tx.getHash(), tx);
             }
         }
@@ -1477,7 +1546,8 @@ public class Wallet implements Serializable {
         // Note, we must reprocess dead transactions first. The reason is that if there is a double spend across
         // chains from our own coins we get a complicated situation:
         //
-        // 1) We switch to a new chain (B) that contains a double spend overriding a pending transaction. It goes dead.
+        // 1) We switch to a new chain (B) that contains a double spend overriding a pending transaction. The
+        //    pending transaction goes dead.
         // 2) We switch BACK to the first chain (A). The dead transaction must go pending again.
         // 3) We resurrect the transactions that were in chain (B) and assume the miners will start work on putting them
         //    in to the chain, but it's not possible because it's a double spend. So now that transaction must become
@@ -1485,10 +1555,10 @@ public class Wallet implements Serializable {
         //
         // This only occurs when we are double spending our own coins.
         for (Transaction tx : dead.values()) {
-            reprocessTxAfterReorg(pool, tx);
+            reprocessUnincludedTxAfterReorg(pool, tx);
         }
         for (Transaction tx : toReprocess.values()) {
-            reprocessTxAfterReorg(pool, tx);
+            reprocessUnincludedTxAfterReorg(pool, tx);
         }
 
         log.info("post-reorg balance is {}", Utils.bitcoinValueToFriendlyString(getBalance()));
@@ -1503,12 +1573,15 @@ public class Wallet implements Serializable {
         checkState(isConsistent());
     }
 
-    private void reprocessTxAfterReorg(Map<Sha256Hash, Transaction> pool, Transaction tx) {
+    private void reprocessUnincludedTxAfterReorg(Map<Sha256Hash, Transaction> pool, Transaction tx) {
         log.info("TX {}", tx.getHashAsString());
         int numInputs = tx.getInputs().size();
         int noSuchTx = 0;
         int success = 0;
         boolean isDead = false;
+        // The transactions that we connected inputs to, so we can go back later and move them into the right
+        // bucket if all their outputs got spent.
+        Set<Transaction> connectedTransactions = new TreeSet<Transaction>();
         for (TransactionInput input : tx.getInputs()) {
             if (input.isCoinBase()) {
                 // Input is not in our wallet so there is "no such input tx", bit of an abuse.
@@ -1518,6 +1591,8 @@ public class Wallet implements Serializable {
             TransactionInput.ConnectionResult result = input.connect(pool, TransactionInput.ConnectMode.ABORT_ON_CONFLICT);
             if (result == TransactionInput.ConnectionResult.SUCCESS) {
                 success++;
+                TransactionOutput connectedOutput = checkNotNull(input.getConnectedOutput(pool));
+                connectedTransactions.add(checkNotNull(connectedOutput.parentTransaction));
             } else if (result == TransactionInput.ConnectionResult.NO_SUCH_TX) {
                 noSuchTx++;
             } else if (result == TransactionInput.ConnectionResult.ALREADY_SPENT) {
@@ -1545,6 +1620,12 @@ public class Wallet implements Serializable {
             log.info("   ->pending", tx.getHashAsString());
             pending.put(tx.getHash(), tx);
             dead.remove(tx.getHash());
+        }
+
+        // The act of re-connecting this un-included transaction may have caused other transactions to become fully
+        // spent so move them into the right bucket here to keep performance good.
+        for (Transaction maybeSpent : connectedTransactions) {
+            maybeMoveTxToSpent(maybeSpent, "reorg");
         }
     }
 
@@ -1617,5 +1698,13 @@ public class Wallet implements Serializable {
             };
         }
         return peerEventListener;
+    }
+
+    public Sha256Hash getLastBlockSeenHash() {
+        return lastBlockSeenHash;
+    }
+
+    public void setLastBlockSeenHash(Sha256Hash lastBlockSeenHash) {
+        this.lastBlockSeenHash = lastBlockSeenHash;
     }
 }

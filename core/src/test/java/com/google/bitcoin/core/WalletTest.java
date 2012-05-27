@@ -16,6 +16,7 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.core.WalletTransaction.Pool;
 import com.google.bitcoin.store.BlockStore;
 import com.google.bitcoin.store.MemoryBlockStore;
 import com.google.bitcoin.store.WalletProtobufSerializer;
@@ -227,6 +228,8 @@ public class WalletTest {
         assertEquals(txn[0].getHash(), tx1.getHash());
         assertEquals(BigInteger.ZERO, bigints[0]);
         assertEquals(oneCoin, bigints[1]);
+        assertEquals(TransactionConfidence.ConfidenceType.BUILDING, tx1.getConfidence().getConfidenceType());
+        assertEquals(1, tx1.getConfidence().getAppearedAtChainHeight());
         // Send 0.10 to somebody else.
         Transaction send1 = wallet.createSend(new ECKey().toAddress(params), toNanoCoins(0, 10), myAddress);
         // Pretend it makes it into the block chain, our wallet state is cleared but we still have the keys, and we
@@ -261,6 +264,55 @@ public class WalletTest {
         Transaction send2 = new Transaction(params, send1.bitcoinSerialize());
         assertEquals(nanos, send2.getValueSentFromMe(wallet));
         assertEquals(BigInteger.ZERO.subtract(toNanoCoins(0, 10)), send2.getValue(wallet));
+    }
+
+    @Test
+    public void isConsistent_duplicates() throws Exception {
+        // This test ensures that isConsistent catches duplicate transactions.
+        Transaction tx = createFakeTx(params, Utils.toNanoCoins(1, 0), myAddress);
+        Address someOtherGuy = new ECKey().toAddress(params);
+        TransactionOutput output = new TransactionOutput(params, tx, Utils.toNanoCoins(0, 5), someOtherGuy);
+        tx.addOutput(output);
+        wallet.receiveFromBlock(tx, null, BlockChain.NewBlockType.BEST_CHAIN);
+        
+        assertTrue(wallet.isConsistent());
+        
+        Transaction txClone = new Transaction(params, tx.bitcoinSerialize());
+        try {
+            wallet.receiveFromBlock(txClone, null, BlockChain.NewBlockType.SIDE_CHAIN);
+            fail();
+        } catch (IllegalStateException ex) {
+            // expected
+        }
+    }
+
+    @Test
+    public void isConsistent_pools() throws Exception {
+        // This test ensures that isConsistent catches transactions that are in incompatible pools.
+        Transaction tx = createFakeTx(params, Utils.toNanoCoins(1, 0), myAddress);
+        Address someOtherGuy = new ECKey().toAddress(params);
+        TransactionOutput output = new TransactionOutput(params, tx, Utils.toNanoCoins(0, 5), someOtherGuy);
+        tx.addOutput(output);
+        wallet.receiveFromBlock(tx, null, BlockChain.NewBlockType.BEST_CHAIN);
+        
+        assertTrue(wallet.isConsistent());
+        
+        wallet.addWalletTransaction(new WalletTransaction(Pool.PENDING, tx));
+        assertFalse(wallet.isConsistent());
+    }
+
+    @Test
+    public void isConsistent_spent() throws Exception {
+        // This test ensures that isConsistent catches transactions that are marked spent when
+        // they aren't.
+        Transaction tx = createFakeTx(params, Utils.toNanoCoins(1, 0), myAddress);
+        Address someOtherGuy = new ECKey().toAddress(params);
+        TransactionOutput output = new TransactionOutput(params, tx, Utils.toNanoCoins(0, 5), someOtherGuy);
+        tx.addOutput(output);
+        assertTrue(wallet.isConsistent());
+        
+        wallet.addWalletTransaction(new WalletTransaction(Pool.SPENT, tx));
+        assertFalse(wallet.isConsistent());
     }
 
     @Test
@@ -633,5 +685,61 @@ public class WalletTest {
         assertEquals(coin1, wallet.getBalance());
     }
     
+    @Test
+    public void spendToSameWallet() throws Exception {
+        // Test that a spend to the same wallet is dealt with correctly.
+        // It should appear in the wallet and confirm.
+        // This is a bit of a silly thing to do in the real world as all it does is burn a fee but it is perfectly valid.
+
+        BigInteger coin1 = Utils.toNanoCoins(1, 0);
+        BigInteger coinHalf = Utils.toNanoCoins(0, 50);
+
+        // Start by giving us 1 coin.
+        Transaction inbound1 = createFakeTx(params, coin1, myAddress);
+        wallet.receiveFromBlock(inbound1, null, BlockChain.NewBlockType.BEST_CHAIN);
+
+        // Send half to ourselves. We should then have a balance available to spend of zero.
+        assertEquals(1, wallet.getPoolSize(WalletTransaction.Pool.UNSPENT));
+        assertEquals(1, wallet.getPoolSize(WalletTransaction.Pool.ALL));
+
+        Transaction outbound1 = wallet.createSend(myAddress, coinHalf);
+        wallet.commitTx(outbound1);
+
+        // We should have a zero available balance before the next block.
+        assertEquals(BigInteger.ZERO, wallet.getBalance());
+
+        wallet.receiveFromBlock(outbound1, null, BlockChain.NewBlockType.BEST_CHAIN);
+
+        // We should have a balance of 1 BTC after the block is received.
+        assertEquals(coin1, wallet.getBalance());
+    }
+
+    @Test
+    public void rememberLastBlockSeenHash() throws Exception {
+        BigInteger v1 = toNanoCoins(5, 0);
+        BigInteger v2 = toNanoCoins(0, 50);
+        BigInteger v3 = toNanoCoins(0, 25);
+        Transaction t1 = createFakeTx(params, v1, myAddress);
+        Transaction t2 = createFakeTx(params, v2, myAddress);
+        Transaction t3 = createFakeTx(params, v3, myAddress);
+        StoredBlock b1 = createFakeBlock(params, blockStore, t1).storedBlock;
+        // TODO for Mike - b2 gets sent to side chain but b1, b2, b3 are all chained together - unrealistic.
+        StoredBlock b2 = createFakeBlock(params, blockStore, t2).storedBlock;
+        StoredBlock b3 = createFakeBlock(params, blockStore, t3).storedBlock;
+
+        // Receive a block on the best chain - this should set the last block seen hash.
+        wallet.receiveFromBlock(t1, b1, BlockChain.NewBlockType.BEST_CHAIN);
+        assertEquals(b1.getHeader().getHash(), wallet.getLastBlockSeenHash());
+
+        // Receive a block on the side chain - this should not change the last block seen hash.
+        wallet.receiveFromBlock(t2, b2, BlockChain.NewBlockType.SIDE_CHAIN);
+        assertEquals(b1.getHeader().getHash(), wallet.getLastBlockSeenHash());
+
+        // Receive block 3 on the best chain - this should change the last block seen hash.
+        wallet.receiveFromBlock(t3, b3, BlockChain.NewBlockType.BEST_CHAIN);
+        assertEquals(b3.getHeader().getHash(), wallet.getLastBlockSeenHash());
+    }
+
+
     // Support for offline spending is tested in PeerGroupTest
 }
