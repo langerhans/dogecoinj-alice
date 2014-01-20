@@ -65,14 +65,14 @@ public class Transaction extends ChildMessage implements Serializable, IsMultiBi
      * If fee is lower than this value (in satoshis), a default reference client will treat it as if there were no fee.
      * Currently this is 10000 satoshis.
      */
-    public static final BigInteger REFERENCE_DEFAULT_MIN_TX_FEE = BigInteger.valueOf(10000);
+    public static final BigInteger REFERENCE_DEFAULT_MIN_TX_FEE = BigInteger.valueOf(100000000); // 1 Doge minimum fee!
 
     /**
      * Any standard (ie pay-to-address) output smaller than this value (in satoshis) will most likely be rejected by the network.
      * This is calculated by assuming a standard output will be 34 bytes, and then using the formula used in
      * {@link TransactionOutput#getMinNonDustValue(BigInteger)}. Currently it's 5460 satoshis.
      */
-    public static final BigInteger MIN_NONDUST_OUTPUT = BigInteger.valueOf(5460);
+    public static final BigInteger MIN_NONDUST_OUTPUT = BigInteger.ONE; //DOGE: We can send one "shibetoshi" but this will cost us extra fee!
 
     // These are serialized in both bitcoin and java serialization.
     private long version;
@@ -656,7 +656,7 @@ public class Transaction extends ChildMessage implements Serializable, IsMultiBi
                 }
                 s.append(" ");
                 s.append(bitcoinValueToPlainString(out.getValue()));
-                s.append(" BTC");
+                s.append(" DOGE");
                 if (!out.isAvailableForSpending()) {
                     s.append(" Spent");
                 }

@@ -76,7 +76,7 @@ public class VersionMessage extends Message {
     public static final String BITCOINJ_VERSION = "0.10.2";
 
     /** The value that is prepended to the subVer field of this application. */
-    public static final String LIBRARY_SUBVER = "/BitCoinJ:" + BITCOINJ_VERSION + "/";
+    public static final String LIBRARY_SUBVER = "/DogeCoinJ:" + BITCOINJ_VERSION + "/";
 
     public VersionMessage(NetworkParameters params, byte[] msg) throws ProtocolException {
         super(params, msg, 0);
@@ -307,6 +307,8 @@ public class VersionMessage extends Message {
      * is available and the memory pool of the remote peer will be queried when the downloadData property is true.
      */
     public boolean isBloomFilteringSupported() {
-        return clientVersion >= FilteredBlock.MIN_PROTOCOL_VERSION;
+        // TODO: no bloomfiltering (yet)
+        // return clientVersion >= FilteredBlock.MIN_PROTOCOL_VERSION;
+        return false;
     }
 }

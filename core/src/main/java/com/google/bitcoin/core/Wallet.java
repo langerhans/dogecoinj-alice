@@ -197,7 +197,6 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
      */
     public static class DefaultCoinSelector implements CoinSelector {
         public CoinSelection select(BigInteger biTarget, LinkedList<TransactionOutput> candidates) {
-            long target = biTarget.longValue();
             HashSet<TransactionOutput> selected = new HashSet<TransactionOutput>();
             // Sort the inputs by age*value so we get the highest "coindays" spent.
             // TODO: Consider changing the wallets internal format to track just outputs and keep them ordered.
@@ -231,17 +230,17 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
             }
             // Now iterate over the sorted outputs until we have got as close to the target as possible or a little
             // bit over (excessive value will be change).
-            long total = 0;
+            BigInteger biTotal = BigInteger.ZERO;
             for (TransactionOutput output : sortedOutputs) {
-                if (total >= target) break;
+                if (biTotal.compareTo(biTarget) >= 0) break;
                 // Only pick chain-included transactions, or transactions that are ours and pending.
                 if (!shouldSelect(output.parentTransaction)) continue;
                 selected.add(output);
-                total += output.getValue().longValue();
+                biTotal = biTotal.add(output.getValue());
             }
             // Total may be lower than target here, if the given candidates were insufficient to create to requested
             // transaction.
-            return new CoinSelection(BigInteger.valueOf(total), selected);
+            return new CoinSelection(biTotal, selected);
         }
 
         /** Sub-classes can override this to just customize whether transactions are usable, but keep age sorting. */
@@ -712,8 +711,8 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
             BigInteger valueSentToMe = tx.getValueSentToMe(this);
             BigInteger valueSentFromMe = tx.getValueSentFromMe(this);
             if (log.isInfoEnabled()) {
-                log.info(String.format("Received a pending transaction %s that spends %s BTC from our own wallet (%s)," +
-                        " and sends us %s BTC", tx.getHashAsString(), Utils.bitcoinValueToFriendlyString(valueSentFromMe),
+                log.info(String.format("Received a pending transaction %s that spends %s DOGE from our own wallet (%s)," +
+                        " and sends us %s DOGE", tx.getHashAsString(), Utils.bitcoinValueToFriendlyString(valueSentFromMe),
                         getDescription(), Utils.bitcoinValueToFriendlyString(valueSentToMe)));
             }
             if (tx.getConfidence().getSource().equals(TransactionConfidence.Source.UNKNOWN)) {
@@ -897,7 +896,7 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
         BigInteger valueSentToMe = tx.getValueSentToMe(this);
         BigInteger valueDifference = valueSentToMe.subtract(valueSentFromMe);
 
-        log.info("Received tx{} for {} BTC: {} [{}] in block {}", new Object[]{sideChain ? " on a side chain" : "",
+        log.info("Received tx{} for {} DOGE: {} [{}] in block {}", new Object[]{sideChain ? " on a side chain" : "",
                 bitcoinValueToFriendlyString(valueDifference), tx.getHashAsString(), relativityOffset,
                 block != null ? block.getHeader().getHash() : "(unit test)"});
 
@@ -1935,7 +1934,7 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
      * @throws IllegalArgumentException if you try and complete the same SendRequest twice.
      * @return whether or not the requested send is affordable.
      */
-    public boolean completeTx(SendRequest req, boolean sign) {
+    public boolean completeTx(SendRequest req, boolean sign) throws InsufficientMoneyException{
         lock.lock();
         try {
             Preconditions.checkArgument(!req.completed, "Given SendRequest has already been completed.");
@@ -1960,17 +1959,17 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
 
             List<TransactionInput> originalInputs = new ArrayList<TransactionInput>(req.tx.getInputs());
 
-            // We need to know if we need to add an additional fee because one of our values are smaller than 0.01 BTC
+            // We need to know if we need to add an additional fee because one of our values are smaller than 1 DOGE
             boolean needAtLeastReferenceFee = false;
+            int txOutDustFeeCount = 0;
             if (req.ensureMinRequiredFee && !req.emptyWallet) { // min fee checking is handled later for emptyWallet
                 for (TransactionOutput output : req.tx.getOutputs())
-                    if (output.getValue().compareTo(Utils.CENT) < 0) {
-                        if (output.getValue().compareTo(output.getMinNonDustValue()) < 0) {
-                            log.error("Tried to send dust with ensureMinRequiredFee set - no way to complete this");
-                            return false;
-                        }
+                    if (output.getValue().compareTo(Utils.COIN) < 0) { //TXOut lower than 1 DOGE have a 2 DOGE fee!
+                        //TODO Currently Dogecoin doesn't have this. We can put it back in later.
+//                        if (output.getValue().compareTo(output.getMinNonDustValue()) < 0)
+//                            throw new IllegalArgumentException("Tried to send dust with ensureMinRequiredFee set - no way to complete this");
                         needAtLeastReferenceFee = true;
-                        break;
+                        txOutDustFeeCount++; //DOGE: Each TXOut < 1 DOGE needs +1 DOGE fee!
                     }
             }
 
@@ -1989,7 +1988,7 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                 // This can throw InsufficientMoneyException.
                 FeeCalculation feeCalculation;
                 try {
-                    feeCalculation = new FeeCalculation(req, value, originalInputs, needAtLeastReferenceFee, candidates);
+                    feeCalculation = new FeeCalculation(req, value, originalInputs, needAtLeastReferenceFee, candidates, txOutDustFeeCount);
                 } catch (InsufficientMoneyException e) {
                     // TODO: Propagate this after 0.9 is released and stop returning a boolean.
                     return false;
@@ -2003,6 +2002,9 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                 CoinSelector selector = req.coinSelector == null ? coinSelector : req.coinSelector;
                 bestCoinSelection = selector.select(NetworkParameters.MAX_MONEY, candidates);
                 req.tx.getOutput(0).setValue(bestCoinSelection.valueGathered);
+                totalOutput = bestCoinSelection.valueGathered;
+                if (totalOutput.compareTo(BigInteger.valueOf(2)) < 0)
+                    throw new InsufficientMoneyException(totalOutput.subtract(BigInteger.valueOf(2)), "Can't spend this due to fee.");
             }
 
             for (TransactionOutput output : bestCoinSelection.gathered)
@@ -2013,7 +2015,14 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                 final BigInteger feePerKb = req.feePerKb == null ? BigInteger.ZERO : req.feePerKb;
                 Transaction tx = req.tx;
                 if (!adjustOutputDownwardsForFee(tx, bestCoinSelection, baseFee, feePerKb))
-                    return false;
+                    throw new InsufficientMoneyException.CouldNotAdjustDownwards();
+
+                //Set total output again after we reduced it by the fee. There are 3 cases here at emptying:
+                //1: Balance is >= 2: The fee will be 1 (or more if the size of the tx is bigger.
+                //2: Balance is >= 1 but < 2: The fee will be 1, but the output will be below 1 so additional fee is needed, which we don't have.
+                //3: Balance is > 0 but < 1: We can never spend this due to fee.
+                //4: Balance is 0: This won't happen here.
+                totalOutput = tx.getOutput(0).getValue();
             }
 
             totalInput = totalInput.add(bestCoinSelection.valueGathered);
@@ -2323,7 +2332,7 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
         lock.lock();
         try {
             StringBuilder builder = new StringBuilder();
-            builder.append(String.format("Wallet containing %s BTC in:%n", bitcoinValueToFriendlyString(getBalance())));
+            builder.append(String.format("Wallet containing %s DOGE in:%n", bitcoinValueToFriendlyString(getBalance())));
             builder.append(String.format("  %d unspent transactions%n", unspent.size()));
             builder.append(String.format("  %d spent transactions%n", spent.size()));
             builder.append(String.format("  %d pending transactions%n", pending.size()));
@@ -3326,7 +3335,8 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
         private TransactionOutput bestChangeOutput;
 
         public FeeCalculation(SendRequest req, BigInteger value, List<TransactionInput> originalInputs,
-                              boolean needAtLeastReferenceFee, LinkedList<TransactionOutput> candidates) throws InsufficientMoneyException {
+                              boolean needAtLeastReferenceFee, LinkedList<TransactionOutput> candidates,
+                              int txOutDustFeeCount  ) throws InsufficientMoneyException {
             checkState(lock.isHeldByCurrentThread());
             // There are 3 possibilities for what adding change might do:
             // 1) No effect
@@ -3344,7 +3354,7 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
             // We keep track of the last size of the transaction we calculated but only if the act of adding inputs and
             // change resulted in the size crossing a 1000 byte boundary. Otherwise it stays at zero.
             int lastCalculatedSize = 0;
-            BigInteger valueNeeded;
+            BigInteger valueNeeded, valueMissing = null;
             while (true) {
                 resetTxInputs(req, originalInputs);
 
@@ -3358,6 +3368,10 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                 if (needAtLeastReferenceFee && fees.compareTo(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE) < 0)
                     fees = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE;
 
+                //DOGE: Add 1 DOGE fee per txOut < 1 DOGE
+                if (txOutDustFeeCount > 0)
+                    fees = fees.add(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.multiply(BigInteger.valueOf(txOutDustFeeCount)));
+
                 valueNeeded = value.add(fees);
                 if (additionalValueForNextCategory != null)
                     valueNeeded = valueNeeded.add(additionalValueForNextCategory);
@@ -3367,8 +3381,10 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                 CoinSelector selector = req.coinSelector == null ? coinSelector : req.coinSelector;
                 CoinSelection selection = selector.select(valueNeeded, candidates);
                 // Can we afford this?
-                if (selection.valueGathered.compareTo(valueNeeded) < 0)
+                if (selection.valueGathered.compareTo(valueNeeded) < 0) {
+                    valueMissing = valueNeeded.subtract(selection.valueGathered);
                     break;
+                }
                 checkState(selection.gathered.size() > 0 || originalInputs.size() > 0);
 
                 // We keep track of an upper bound on transaction size to calculate fees that need to be added.
@@ -3384,12 +3400,11 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                 if (additionalValueSelected != null)
                     change = change.add(additionalValueSelected);
 
-                // If change is < 0.01 BTC, we will need to have at least minfee to be accepted by the network
-                if (req.ensureMinRequiredFee && !change.equals(BigInteger.ZERO) &&
-                        change.compareTo(Utils.CENT) < 0 && fees.compareTo(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE) < 0) {
+                // If change is < 1 DOGE, we will need to have at least minfee to be accepted by the network
+                if (req.ensureMinRequiredFee && !change.equals(BigInteger.ZERO) && change.compareTo(Utils.COIN) < 0) {
                     // This solution may fit into category 2, but it may also be category 3, we'll check that later
                     eitherCategory2Or3 = true;
-                    additionalValueForNextCategory = Utils.CENT;
+                    additionalValueForNextCategory = Utils.COIN;
                     // If the change is smaller than the fee we want to add, this will be negative
                     change = change.subtract(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.subtract(fees));
                 }
@@ -3405,11 +3420,14 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                         changeAddress = getChangeAddress();
                     changeOutput = new TransactionOutput(params, req.tx, change, changeAddress);
                     // If the change output would result in this transaction being rejected as dust, just drop the change and make it a fee
-                    if (req.ensureMinRequiredFee && Transaction.MIN_NONDUST_OUTPUT.compareTo(change) >= 0) {
+                    if (req.ensureMinRequiredFee && BigInteger.valueOf(100000000).compareTo(change) > 0) {
                         // This solution definitely fits in category 3
+                        //Throw away change lower than 1 DOGE as this is cheaper than paying the 1 DOGE fee.
                         isCategory3 = true;
-                        additionalValueForNextCategory = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.add(
-                                                         Transaction.MIN_NONDUST_OUTPUT.add(BigInteger.ONE));
+                        //additionalValueForNextCategory = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.add(
+                        //                                 Transaction.MIN_NONDUST_OUTPUT.add(BigInteger.ONE));
+                        additionalValueForNextCategory = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.add(BigInteger.ONE);
+                                                         //DOGE: We don't have a min value, but we add more fees for tx < 1
                     } else {
                         size += changeOutput.bitcoinSerialize().length + VarInt.sizeOf(req.tx.getOutputs().size()) - VarInt.sizeOf(req.tx.getOutputs().size() - 1);
                         // This solution is either category 1 or 2
@@ -3449,7 +3467,7 @@ public class Wallet implements Serializable, BlockChainListener, PeerFilterProvi
                     // If we are in selection2, we will require at least CENT additional. If we do that, there is no way
                     // we can end up back here because CENT additional will always get us to 1
                     checkState(selection2 == null);
-                    checkState(additionalValueForNextCategory.equals(Utils.CENT));
+                    checkState(additionalValueForNextCategory.equals(Utils.COIN));
                     selection2 = selection;
                     selection2Change = checkNotNull(changeOutput); // If we get no change in category 2, we are actually in category 3
                 } else {

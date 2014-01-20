@@ -90,7 +90,8 @@ public class Address extends VersionedChecksummedBytes {
      */
     public NetworkParameters getParameters() {
         // TODO: There should be a more generic way to get all supported networks.
-        NetworkParameters[] networks = { TestNet3Params.get(), MainNetParams.get() };
+        // FIXME: we have no testnet for now NetworkParameters[] networks = { TestNet3Params.get(), MainNetParams.get() };
+        NetworkParameters[] networks = { MainNetParams.get() };
         for (NetworkParameters params : networks) {
             for (int code : params.getAcceptableAddressCodes()) {
                 if (code == version) {

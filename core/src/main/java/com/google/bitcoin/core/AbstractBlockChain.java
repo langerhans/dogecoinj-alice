@@ -804,7 +804,11 @@ public abstract class AbstractBlockChain {
         // two weeks after the initial block chain download.
         long now = System.currentTimeMillis();
         StoredBlock cursor = blockStore.get(prev.getHash());
-        for (int i = 0; i < params.getInterval() - 1; i++) {
+        int goBack = params.getInterval() - 1;
+        if (cursor.getHeight()+1 != params.getInterval())
+            goBack = params.getInterval();
+
+        for (int i = 0; i < goBack; i++) {
             if (cursor == null) {
                 // This should never happen. If it does, it means we are following an incorrect or busted chain.
                 throw new VerificationException(
@@ -816,14 +820,33 @@ public abstract class AbstractBlockChain {
         if (elapsed > 50)
             log.info("Difficulty transition traversal took {}msec", elapsed);
 
+        if(cursor == null) return;
+
         Block blockIntervalAgo = cursor.getHeader();
         int timespan = (int) (prev.getTimeSeconds() - blockIntervalAgo.getTimeSeconds());
         // Limit the adjustment step.
         final int targetTimespan = params.getTargetTimespan();
-        if (timespan < targetTimespan / 4)
-            timespan = targetTimespan / 4;
-        if (timespan > targetTimespan * 4)
-            timespan = targetTimespan * 4;
+        if (storedPrev.getHeight()+1 > 10000)
+        {
+            if (timespan < targetTimespan / 4)
+                timespan = targetTimespan / 4;
+            if (timespan > targetTimespan * 4)
+                timespan = targetTimespan * 4;
+        }
+        else if (storedPrev.getHeight()+1 > 5000)
+        {
+            if (timespan < targetTimespan / 8)
+                timespan = targetTimespan / 8;
+            if (timespan > targetTimespan * 4)
+                timespan = targetTimespan * 4;
+        }
+        else
+        {
+            if (timespan < targetTimespan / 16)
+                timespan = targetTimespan / 16;
+            if (timespan > targetTimespan * 4)
+                timespan = targetTimespan * 4;
+        }
 
         BigInteger newDifficulty = Utils.decodeCompactBits(prev.getDifficultyTarget());
         newDifficulty = newDifficulty.multiply(BigInteger.valueOf(timespan));
