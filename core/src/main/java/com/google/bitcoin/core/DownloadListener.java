@@ -16,25 +16,24 @@
 
 package com.google.bitcoin.core;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.concurrent.Semaphore;
 
 /**
- * Listen to chain download events and print useful informational messages.
- *
- * <p>progress, startDownload, doneDownload maybe be overridden to change the way the user
- * is notified.
- *
- * <p>Methods are called with the event listener object locked so your
- * implementation does not have to be thread safe.
- *
- * @author miron@google.com (Miron Cuperman a.k.a. devrandom)
+ * <p>An implementation of {@link AbstractPeerEventListener} that listens to chain download events and tracks progress
+ * as a percentage. The default implementation prints progress to stdout, but you can subclass it and override the
+ * progress method to update a GUI instead.</p>
  */
 public class DownloadListener extends AbstractPeerEventListener {
+    private static final Logger log = LoggerFactory.getLogger(DownloadListener.class);
     private int originalBlocksLeft = -1;
     private int lastPercent = 0;
     private Semaphore done = new Semaphore(0);
+    private boolean caughtUp = false;
 
     @Override
     public void onChainDownloadStarted(Peer peer, int blocksLeft) {
@@ -48,7 +47,11 @@ public class DownloadListener extends AbstractPeerEventListener {
 
     @Override
     public void onBlocksDownloaded(Peer peer, Block block, int blocksLeft) {
+        if (caughtUp)
+            return;
+
         if (blocksLeft == 0) {
+            caughtUp = true;
             doneDownload();
             done.release();
         }
@@ -70,7 +73,7 @@ public class DownloadListener extends AbstractPeerEventListener {
      * @param date the date of the last block downloaded
      */
     protected void progress(double pct, int blocksSoFar, Date date) {
-        System.out.println(String.format("Chain download %d%% done with %d blocks to go, block date %s", (int) pct,
+        log.info(String.format("Chain download %d%% done with %d blocks to go, block date %s", (int) pct,
                 blocksSoFar, DateFormat.getDateTimeInstance().format(date)));
     }
 
@@ -80,15 +83,15 @@ public class DownloadListener extends AbstractPeerEventListener {
      * @param blocks the number of blocks to download, estimated
      */
     protected void startDownload(int blocks) {
-        System.out.println("Downloading block chain of size " + blocks + ". " +
-                (blocks > 1000 ? "This may take a while." : ""));
+        if (blocks > 0)
+            log.info("Downloading block chain of size " + blocks + ". " +
+                    (blocks > 1000 ? "This may take a while." : ""));
     }
 
     /**
      * Called when we are done downloading the block chain.
      */
     protected void doneDownload() {
-        System.out.println("Done downloading block chain");
     }
 
     /**

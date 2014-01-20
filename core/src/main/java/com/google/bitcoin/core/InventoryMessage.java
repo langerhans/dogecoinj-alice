@@ -16,6 +16,14 @@
 
 package com.google.bitcoin.core;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
+/**
+ * <p>Represents the "inv" P2P network message. An inv contains a list of hashes of either blocks or transactions. It's
+ * a bandwidth optimization - on receiving some data, a (fully validating) peer sends every connected peer an inv
+ * containing the hash of what it saw. It'll only transmit the full thing if a peer asks for it with a
+ * {@link GetDataMessage}.</p>
+ */
 public class InventoryMessage extends ListMessage {
     private static final long serialVersionUID = -7050246551646107066L;
 
@@ -27,8 +35,6 @@ public class InventoryMessage extends ListMessage {
      * Deserializes an 'inv' message.
      * @param params NetworkParameters object.
      * @param msg Bitcoin protocol formatted byte array containing message content.
-     * @param offset The location of the first msg byte within the array.
-     * @param protocolVersion Bitcoin protocol version.
      * @param parseLazy Whether to perform a full parse immediately or delay until a read is requested.
      * @param parseRetain Whether to retain the backing byte array for quick reserialization.  
      * If true and the backing byte array is invalidated due to modification of a field then 
@@ -52,5 +58,14 @@ public class InventoryMessage extends ListMessage {
 
     public void addTransaction(Transaction tx) {
         addItem(new InventoryItem(InventoryItem.Type.Transaction, tx.getHash()));
+    }
+
+    /** Creates a new inv message for the given transactions. */
+    public static InventoryMessage with(Transaction... txns) {
+        checkArgument(txns.length > 0);
+        InventoryMessage result = new InventoryMessage(txns[0].getParams());
+        for (Transaction tx : txns)
+            result.addTransaction(tx);
+        return result;
     }
 }

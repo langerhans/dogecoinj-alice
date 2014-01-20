@@ -21,22 +21,30 @@
     <parent>
         <groupId>com.google</groupId>
         <artifactId>bitcoinj-parent</artifactId>
-        <version>0.6-SNAPSHOT</version>
+        <version>0.11-SNAPSHOT</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.google</groupId>
     <artifactId>bitcoinj-examples</artifactId>
-    <version>0.6-SNAPSHOT</version>
 
-    <name>BitCoinJ Examples</name>
-    <description>A collection of examples using the BitCoinJ library</description>
+    <name>bitcoinj Examples</name>
+    <description>A collection of examples using the bitcoinj library</description>
 
     <dependencies>
         <dependency>
             <groupId>com.google</groupId>
             <artifactId>bitcoinj</artifactId>
             <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>1.6.4</version>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>1.3.167</version>
         </dependency>
     </dependencies>
 </project>

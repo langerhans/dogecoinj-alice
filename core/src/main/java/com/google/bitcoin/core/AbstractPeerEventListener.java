@@ -19,33 +19,36 @@ package com.google.bitcoin.core;
 import java.util.List;
 
 /**
- * Convenience abstract class for implementing a PeerEventListener.
- *
- * <p>The default method implementations do nothing.
- *
- * @author miron@google.com (Miron Cuperman)
+ * Convenience implementation of {@link PeerEventListener}.
  */
-public class AbstractPeerEventListener extends Object implements PeerEventListener {
+public class AbstractPeerEventListener implements PeerEventListener {
+    @Override
     public void onBlocksDownloaded(Peer peer, Block block, int blocksLeft) {
     }
 
+    @Override
     public void onChainDownloadStarted(Peer peer, int blocksLeft) {
     }
 
+    @Override
     public void onPeerConnected(Peer peer, int peerCount) {
     }
 
+    @Override
     public void onPeerDisconnected(Peer peer, int peerCount) {
     }
 
+    @Override
     public Message onPreMessageReceived(Peer peer, Message m) {
         // Just pass the message right through for further processing.
         return m;
     }
 
+    @Override
     public void onTransaction(Peer peer, Transaction t) {
     }
 
+    @Override
     public List<Message> getData(Peer peer, GetDataMessage m) {
         return null;
     }

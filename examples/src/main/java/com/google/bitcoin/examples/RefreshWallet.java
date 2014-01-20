@@ -17,6 +17,7 @@
 package com.google.bitcoin.examples;
 
 import com.google.bitcoin.core.*;
+import com.google.bitcoin.params.TestNet3Params;
 import com.google.bitcoin.store.BlockStore;
 import com.google.bitcoin.store.MemoryBlockStore;
 
@@ -34,7 +35,7 @@ public class RefreshWallet {
         System.out.println(wallet.toString());
 
         // Set up the components and link them together.
-        final NetworkParameters params = NetworkParameters.testNet();
+        final NetworkParameters params = TestNet3Params.get();
         BlockStore blockStore = new MemoryBlockStore(params);
         BlockChain chain = new BlockChain(params, wallet, blockStore);
 
@@ -44,7 +45,7 @@ public class RefreshWallet {
 
         wallet.addEventListener(new AbstractWalletEventListener() {
             @Override
-            public void onCoinsReceived(Wallet w, Transaction tx, BigInteger prevBalance, BigInteger newBalance) {
+            public synchronized void onCoinsReceived(Wallet w, Transaction tx, BigInteger prevBalance, BigInteger newBalance) {
                 System.out.println("\nReceived tx " + tx.getHashAsString());
                 System.out.println(tx.toString());
             }

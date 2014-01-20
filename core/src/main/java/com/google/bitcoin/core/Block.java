@@ -16,27 +16,34 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.script.Script;
+import com.google.bitcoin.script.ScriptBuilder;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedList;
 import java.util.List;
 
 import static com.google.bitcoin.core.Utils.doubleDigest;
 import static com.google.bitcoin.core.Utils.doubleDigestTwoBuffers;
 
 /**
- * A block is the foundation of the BitCoin system. It records a set of {@link Transaction}s together with some data
- * that links it into a place in the global block chain, and proves that a difficult calculation was done over its
- * contents. See the BitCoin technical paper for more detail on blocks. <p/>
+ * <p>A block is a group of transactions, and is one of the fundamental data structures of the Bitcoin system.
+ * It records a set of {@link Transaction}s together with some data that links it into a place in the global block
+ * chain, and proves that a difficult calculation was done over its contents. See
+ * <a href="http://www.bitcoin.org/bitcoin.pdf">the Bitcoin technical paper</a> for
+ * more detail on blocks. <p/>
  *
  * To get a block, you can either build one from the raw bytes you can get from another implementation, or request one
  * specifically using {@link Peer#getBlock(Sha256Hash)}, or grab one from a downloaded {@link BlockChain}.
@@ -45,16 +52,26 @@ public class Block extends Message {
     private static final Logger log = LoggerFactory.getLogger(Block.class);
     private static final long serialVersionUID = 2738848929966035281L;
 
-	/** How many bytes are required to represent a block header. */
+    /** How many bytes are required to represent a block header WITHOUT the trailing 00 length byte. */
     public static final int HEADER_SIZE = 80;
 
     static final long ALLOWED_TIME_DRIFT = 2 * 60 * 60; // Same value as official client.
 
-    /** A value for difficultyTarget (nBits) that allows half of all possible hash solutions. Used in unit testing. */
-    static final long EASIEST_DIFFICULTY_TARGET = 0x207fFFFFL;
+    /**
+     * A constant shared by the entire network: how large in bytes a block is allowed to be. One day we may have to
+     * upgrade everyone to change this, so Bitcoin can continue to grow. For now it exists as an anti-DoS measure to
+     * avoid somebody creating a titanically huge but valid block and forcing everyone to download/store it forever.
+     */
+    public static final int MAX_BLOCK_SIZE = 1 * 1000 * 1000;
+    /**
+     * A "sigop" is a signature verification operation. Because they're expensive we also impose a separate limit on
+     * the number in a block to prevent somebody mining a huge block that has way more sigops than normal, so is very
+     * expensive/slow to verify.
+     */
+    public static final int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE / 50;
 
-    // For unit testing. If not zero, use this instead of the current time.
-    static long fakeClock = 0;
+    /** A value for difficultyTarget (nBits) that allows half of all possible hash solutions. Used in unit testing. */
+    public static final long EASIEST_DIFFICULTY_TARGET = 0x207fFFFFL;
 
     // Fields defined as part of the protocol format.
     private long version;
@@ -64,7 +81,7 @@ public class Block extends Message {
     private long difficultyTarget; // "nBits"
     private long nonce;
 
-	/** If null, it means this object holds only the headers. */
+    /** If null, it means this object holds only the headers. */
     List<Transaction> transactions;
 
     /** Stores the hash of the block. If null, getHash() will recalculate it. */
@@ -75,6 +92,11 @@ public class Block extends Message {
 
     private transient boolean headerBytesValid;
     private transient boolean transactionBytesValid;
+    
+    // Blocks can be encoded in a way that will use more bytes than is optimal (due to VarInts having multiple encodings)
+    // MAX_BLOCK_SIZE must be compared to the optimal encoding, not the actual encoding, so when parsing, we keep track
+    // of the size of the ideal encoding in addition to the actual message size (which Message needs)
+    private transient int optimalEncodingMessageSize;
 
     /** Special case constructor, used for the genesis node, cloneAsHeader and unit tests. */
     Block(NetworkParameters params) {
@@ -88,13 +110,13 @@ public class Block extends Message {
         length = 80;
     }
 
-	/** Constructs a block object from the Bitcoin wire format. */
+    /** Constructs a block object from the Bitcoin wire format. */
     public Block(NetworkParameters params, byte[] payloadBytes) throws ProtocolException {
         super(params, payloadBytes, 0, false, false, payloadBytes.length);
     }
 
     /**
-     * Contruct a block object from the BitCoin wire format.
+     * Contruct a block object from the Bitcoin wire format.
      * @param params NetworkParameters object.
      * @param parseLazy Whether to perform a full parse immediately or delay until a read is requested.
      * @param parseRetain Whether to retain the backing byte array for quick reserialization.  
@@ -109,6 +131,45 @@ public class Block extends Message {
         super(params, payloadBytes, 0, parseLazy, parseRetain, length);
     }
 
+
+    /**
+     * Construct a block initialized with all the given fields.
+     * @param params Which network the block is for.
+     * @param version This should usually be set to 1 or 2, depending on if the height is in the coinbase input.
+     * @param prevBlockHash Reference to previous block in the chain or {@link Sha256Hash#ZERO_HASH} if genesis.
+     * @param merkleRoot The root of the merkle tree formed by the transactions.
+     * @param time UNIX time when the block was mined.
+     * @param difficultyTarget Number which this block hashes lower than.
+     * @param nonce Arbitrary number to make the block hash lower than the target.
+     * @param transactions List of transactions including the coinbase.
+     */
+    public Block(NetworkParameters params, long version, Sha256Hash prevBlockHash, Sha256Hash merkleRoot, long time,
+                 long difficultyTarget, long nonce, List<Transaction> transactions) {
+        super(params);
+        this.version = version;
+        this.prevBlockHash = prevBlockHash;
+        this.merkleRoot = merkleRoot;
+        this.time = time;
+        this.difficultyTarget = difficultyTarget;
+        this.nonce = nonce;
+        this.transactions = new LinkedList<Transaction>();
+        this.transactions.addAll(transactions);
+    }
+
+
+    /**
+     * <p>A utility method that calculates how much new Bitcoin would be created by the block at the given height.
+     * The inflation of Bitcoin is predictable and drops roughly every 4 years (210,000 blocks). At the dawn of
+     * the system it was 50 coins per block, in late 2012 it went to 25 coins per block, and so on. The size of
+     * a coinbase transaction is inflation plus fees.</p>
+     *
+     * <p>The half-life is controlled by {@link com.google.bitcoin.core.NetworkParameters#getSubsidyDecreaseBlockCount()}.
+     * </p>
+     */
+    public BigInteger getBlockInflation(int height) {
+        return Utils.toNanoCoins(50, 0).shiftRight(height / params.getSubsidyDecreaseBlockCount());
+    }
+
     private void readObject(ObjectInputStream ois) throws ClassNotFoundException, IOException {
         ois.defaultReadObject();
         // This code is not actually necessary, as transient fields are initialized to the default value which is in
@@ -116,8 +177,7 @@ public class Block extends Message {
         hash = null;
     }
 
-    private void parseHeader() {
-
+    private void parseHeader() throws ProtocolException {
         if (headerParsed)
             return;
 
@@ -136,11 +196,11 @@ public class Block extends Message {
     }
 
     private void parseTransactions() throws ProtocolException {
-
         if (transactionsParsed)
             return;
 
         cursor = offset + HEADER_SIZE;
+        optimalEncodingMessageSize = HEADER_SIZE;
         if (bytes.length == cursor) {
             // This message is just a header, it has no transactions.
             transactionsParsed = true;
@@ -149,11 +209,15 @@ public class Block extends Message {
         }
 
         int numTransactions = (int) readVarInt();
+        optimalEncodingMessageSize += VarInt.sizeOf(numTransactions);
         transactions = new ArrayList<Transaction>(numTransactions);
         for (int i = 0; i < numTransactions; i++) {
             Transaction tx = new Transaction(params, bytes, cursor, this, parseLazy, parseRetain, UNKNOWN_LENGTH);
+            // Label the transaction as coming from the P2P network, so code that cares where we first saw it knows.
+            tx.getConfidence().setSource(TransactionConfidence.Source.NETWORK);
             transactions.add(tx);
             cursor += tx.getMessageSize();
+            optimalEncodingMessageSize += tx.getOptimalEncodingMessageSize();
         }
         // No need to set length here. If length was not provided then it should be set at the end of parseLight().
         // If this is a genuine lazy parse then length must have been provided to the constructor.
@@ -165,6 +229,16 @@ public class Block extends Message {
         parseHeader();
         parseTransactions();
         length = cursor - offset;
+    }
+    
+    public int getOptimalEncodingMessageSize() {
+        if (optimalEncodingMessageSize != 0)
+            return optimalEncodingMessageSize;
+        maybeParseTransactions();
+        if (optimalEncodingMessageSize != 0)
+            return optimalEncodingMessageSize;
+        optimalEncodingMessageSize = getMessageSize();
+        return optimalEncodingMessageSize;
     }
 
     protected void parseLite() throws ProtocolException {
@@ -185,7 +259,7 @@ public class Block extends Message {
     /*
      * Block uses some special handling for lazy parsing and retention of cached bytes. Parsing and serializing the
      * block header and the transaction list are both non-trivial so there are good efficiency gains to be had by
-     * separating them. There are many cases where a user may need access to access or change one or the other but not both.
+     * separating them. There are many cases where a user may need to access or change one or the other but not both.
      *
      * With this in mind we ignore the inherited checkParse() and unCache() methods and implement a separate version
      * of them for both header and transactions.
@@ -197,9 +271,15 @@ public class Block extends Message {
     private void maybeParseHeader() {
         if (headerParsed || bytes == null)
             return;
-        parseHeader();
-        if (!(headerBytesValid || transactionBytesValid))
-            bytes = null;
+        try {
+            parseHeader();
+            if (!(headerBytesValid || transactionBytesValid))
+                bytes = null;
+        } catch (ProtocolException e) {
+            throw new LazyParseException(
+                    "ProtocolException caught during lazy parse.  For safe access to fields call ensureParsed before attempting read or write access",
+                    e);
+        }
     }
 
     private void maybeParseTransactions() {
@@ -289,7 +369,8 @@ public class Block extends Message {
         }
     }
 
-    private void writeHeader(OutputStream stream) throws IOException {
+    // default for testing
+    void writeHeader(OutputStream stream) throws IOException {
         // try for cached write first
         if (headerBytesValid && bytes != null && bytes.length >= offset + HEADER_SIZE) {
             stream.write(bytes, offset, HEADER_SIZE);
@@ -333,7 +414,6 @@ public class Block extends Message {
      * @throws IOException
      */
     public byte[] bitcoinSerialize() {
-
         // we have completely cached byte array.
         if (headerBytesValid && transactionBytesValid) {
             Preconditions.checkNotNull(bytes, "Bytes should never be null if headerBytesValid && transactionBytesValid");
@@ -381,7 +461,7 @@ public class Block extends Message {
             return 0;
         int len = VarInt.sizeOf(transactions.size());
         for (Transaction tx : transactions) {
-        	// 255 is just a guess at an average tx length
+            // 255 is just a guess at an average tx length
             len += tx.length == UNKNOWN_LENGTH ? 255 : tx.length;
         }
         return len;
@@ -467,7 +547,7 @@ public class Block extends Message {
         return LARGEST_HASH.divide(target.add(BigInteger.ONE));
     }
 
-	/** Returns a copy of the block, but without any transactions. */
+    /** Returns a copy of the block, but without any transactions. */
     public Block cloneAsHeader() {
         maybeParseHeader();
         Block block = new Block(params);
@@ -488,10 +568,26 @@ public class Block extends Message {
      */
     @Override
     public String toString() {
-        StringBuffer s = new StringBuffer("v" + version + " block: \n" + "   previous block: "
-                + prevBlockHash.toString() + "\n" + "   merkle root: " + getMerkleRoot().toString() + "\n"
-                + "   time: [" + time + "] " + new Date(time * 1000).toString() + "\n"
-                + "   difficulty target (nBits): " + difficultyTarget + "\n" + "   nonce: " + nonce + "\n");
+        StringBuilder s = new StringBuilder("v");
+        s.append(version);
+        s.append(" block: \n");
+        s.append("   previous block: ");
+        s.append(getPrevBlockHash());
+        s.append("\n");
+        s.append("   merkle root: ");
+        s.append(getMerkleRoot());
+        s.append("\n");
+        s.append("   time: [");
+        s.append(time);
+        s.append("] ");
+        s.append(new Date(time * 1000));
+        s.append("\n");
+        s.append("   difficulty target (nBits): ");
+        s.append(difficultyTarget);
+        s.append("\n");
+        s.append("   nonce: ");
+        s.append(nonce);
+        s.append("\n");
         if (transactions != null && transactions.size() > 0) {
             s.append("   with ").append(transactions.size()).append(" transaction(s):\n");
             for (Transaction tx : transactions) {
@@ -502,13 +598,13 @@ public class Block extends Message {
     }
 
     /**
-     * Finds a value of nonce that makes the blocks hash lower than the difficulty target. This is called mining, but
-     * solve() is far too slow to do real mining with. It exists only for unit testing purposes and is not a part of
-     * the public API.
-	 *
-     * This can loop forever if a solution cannot be found solely by incrementing nonce. It doesn't change extraNonce.
+     * <p>Finds a value of nonce that makes the blocks hash lower than the difficulty target. This is called mining, but
+     * solve() is far too slow to do real mining with. It exists only for unit testing purposes.
+     *
+     * <p>This can loop forever if a solution cannot be found solely by incrementing nonce. It doesn't change
+     * extraNonce.</p>
      */
-    void solve() {
+    public void solve() {
         maybeParseHeader();
         while (true) {
             try {
@@ -531,7 +627,7 @@ public class Block extends Message {
     public BigInteger getDifficultyTargetAsInteger() throws VerificationException {
         maybeParseHeader();
         BigInteger target = Utils.decodeCompactBits(difficultyTarget);
-        if (target.compareTo(BigInteger.valueOf(0)) <= 0 || target.compareTo(params.proofOfWorkLimit) > 0)
+        if (target.compareTo(BigInteger.ZERO) <= 0 || target.compareTo(params.proofOfWorkLimit) > 0)
             throw new VerificationException("Difficulty target is bad: " + target.toString());
         return target;
     }
@@ -563,9 +659,20 @@ public class Block extends Message {
     private void checkTimestamp() throws VerificationException {
         maybeParseHeader();
         // Allow injection of a fake clock to allow unit testing.
-        long currentTime = fakeClock != 0 ? fakeClock : System.currentTimeMillis() / 1000;
+        long currentTime = Utils.currentTimeMillis()/1000;
         if (time > currentTime + ALLOWED_TIME_DRIFT)
             throw new VerificationException("Block too far in future");
+    }
+
+    private void checkSigOps() throws VerificationException {
+        // Check there aren't too many signature verifications in the block. This is an anti-DoS measure, see the
+        // comments for MAX_BLOCK_SIGOPS.
+        int sigOps = 0;
+        for (Transaction tx : transactions) {
+            sigOps += tx.getSigOpCount();
+        }
+        if (sigOps > MAX_BLOCK_SIGOPS)
+            throw new VerificationException("Block had too many Signature Operations");
     }
 
     private void checkMerkleRoot() throws VerificationException {
@@ -606,10 +713,10 @@ public class Block extends Message {
         // tx3 above). A tree with 5 transactions would look like this:
         //
         //         root
-        //        /    \
-        //       1      \
-        //     /   \     \
-        //    2     3    4
+        //        /     \
+        //       1        5
+        //     /   \     / \
+        //    2     3    4  4
         //  / \   / \   / \
         // t1 t2 t3 t4 t5 t5
         maybeParseTransactions();
@@ -676,11 +783,17 @@ public class Block extends Message {
         // an invalid block, but if we didn't validate this then an untrusted man-in-the-middle could obtain the next
         // valid block from the network and simply replace the transactions in it with their own fictional
         // transactions that reference spent or non-existant inputs.
-        Preconditions.checkState(!transactions.isEmpty());
+        if (transactions.isEmpty())
+            throw new VerificationException("Block had no transactions");
         maybeParseTransactions();
+        if (this.getOptimalEncodingMessageSize() > MAX_BLOCK_SIZE)
+            throw new VerificationException("Block larger than MAX_BLOCK_SIZE");
         checkTransactions();
         checkMerkleRoot();
-    }
+        checkSigOps();
+        for (Transaction transaction : transactions)
+            transaction.verify();
+        }
 
     /**
      * Verifies both the header and that the transactions hash to the merkle root.
@@ -718,28 +831,37 @@ public class Block extends Message {
         return merkleRoot;
     }
 
-	/** Exists only for unit testing. */
+    /** Exists only for unit testing. */
     void setMerkleRoot(Sha256Hash value) {
         unCacheHeader();
         merkleRoot = value;
         hash = null;
     }
 
-	/** Adds a transaction to this block. */
-    void addTransaction(Transaction t) {
+    /** Adds a transaction to this block. The nonce and merkle root are invalid after this. */
+    public void addTransaction(Transaction t) {
+        addTransaction(t, true);
+    }
+
+    /** Adds a transaction to this block, with or without checking the sanity of doing so */
+    void addTransaction(Transaction t, boolean runSanityChecks) {
         unCacheTransactions();
         if (transactions == null) {
             transactions = new ArrayList<Transaction>();
         }
         t.setParent(this);
+        if (runSanityChecks && transactions.size() == 0 && !t.isCoinBase())
+            throw new RuntimeException("Attempted to add a non-coinbase transaction as the first transaction: " + t);
+        else if (runSanityChecks && transactions.size() > 0 && t.isCoinBase())
+            throw new RuntimeException("Attempted to add a coinbase transaction when there already is one: " + t);
         transactions.add(t);
-        adjustLength(t.length);
+        adjustLength(transactions.size(), t.length);
         // Force a recalculation next time the values are needed.
         merkleRoot = null;
         hash = null;
     }
 
-    /** Returns the version of the block data structure as defined by the BitCoin protocol. */
+    /** Returns the version of the block data structure as defined by the Bitcoin protocol. */
     public long getVersion() {
         maybeParseHeader();
         return version;
@@ -775,23 +897,28 @@ public class Block extends Message {
         return new Date(getTimeSeconds()*1000);
     }
 
-    void setTime(long time) {
+    public void setTime(long time) {
         unCacheHeader();
         this.time = time;
         this.hash = null;
     }
 
     /**
-     * Returns the difficulty of the proof of work that this block should meet encoded in compact form. The {@link
+     * Returns the difficulty of the proof of work that this block should meet encoded <b>in compact form</b>. The {@link
      * BlockChain} verifies that this is not too easy by looking at the length of the chain when the block is added.
-     * To find the actual value the hash should be compared against, use getDifficultyTargetBI.
+     * To find the actual value the hash should be compared against, use
+     * {@link com.google.bitcoin.core.Block#getDifficultyTargetAsInteger()}. Note that this is <b>not</b> the same as
+     * the difficulty value reported by the Bitcoin "getdifficulty" RPC that you may see on various block explorers.
+     * That number is the result of applying a formula to the underlying difficulty to normalize the minimum to 1.
+     * Calculating the difficulty that way is currently unsupported.
      */
     public long getDifficultyTarget() {
         maybeParseHeader();
         return difficultyTarget;
     }
 
-    void setDifficultyTarget(long compactForm) {
+    /** Sets the difficulty target in compact form. */
+    public void setDifficultyTarget(long compactForm) {
         unCacheHeader();
         this.difficultyTarget = compactForm;
         this.hash = null;
@@ -806,15 +933,17 @@ public class Block extends Message {
         return nonce;
     }
 
-    void setNonce(long nonce) {
+    /** Sets the nonce and clears any cached data. */
+    public void setNonce(long nonce) {
         unCacheHeader();
         this.nonce = nonce;
         this.hash = null;
     }
 
+    /** Returns an immutable list of transactions held in this block. */
     public List<Transaction> getTransactions() {
        maybeParseTransactions();
-       return Collections.unmodifiableList(transactions);
+       return ImmutableList.copyOf(transactions);
     }
 
     // ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -823,8 +952,8 @@ public class Block extends Message {
     // Used to make transactions unique.
     static private int txCounter;
 
-	/** Adds a coinbase transaction to the block. This exists for unit tests. */
-    void addCoinbaseTransaction(byte[] pubKeyTo) {
+    /** Adds a coinbase transaction to the block. This exists for unit tests. */
+    void addCoinbaseTransaction(byte[] pubKeyTo, BigInteger value) {
         unCacheTransactions();
         transactions = new ArrayList<Transaction>();
         Transaction coinbase = new Transaction(params);
@@ -833,9 +962,13 @@ public class Block extends Message {
         //
         // Here we will do things a bit differently so a new address isn't needed every time. We'll put a simple
         // counter in the scriptSig so every transaction has a different hash.
-        coinbase.addInput(new TransactionInput(params, coinbase, new byte[]{(byte) txCounter++}));
-        coinbase.addOutput(new TransactionOutput(params, coinbase, Script.createOutputScript(pubKeyTo)));
+        coinbase.addInput(new TransactionInput(params, coinbase, new byte[]{(byte) txCounter, (byte) (txCounter++ >> 8)}));
+        coinbase.addOutput(new TransactionOutput(params, coinbase, value,
+                ScriptBuilder.createOutputScript(new ECKey(null, pubKeyTo)).getProgram()));
         transactions.add(coinbase);
+        coinbase.setParent(this);
+        coinbase.length = coinbase.bitcoinSerialize().length;
+        adjustLength(transactions.size(), coinbase.length);
     }
 
     static final byte[] EMPTY_BYTES = new byte[32];
@@ -843,26 +976,48 @@ public class Block extends Message {
     /**
      * Returns a solved block that builds on top of this one. This exists for unit tests.
      */
-    Block createNextBlock(Address to, long time) {
+    @VisibleForTesting
+    public Block createNextBlock(Address to, long time) {
+        return createNextBlock(to, null, time, EMPTY_BYTES, Utils.toNanoCoins(50, 0));
+    }
+
+    /**
+     * Returns a solved block that builds on top of this one. This exists for unit tests.
+     * In this variant you can specify a public key (pubkey) for use in generating coinbase blocks.
+     */
+    Block createNextBlock(@Nullable Address to, @Nullable TransactionOutPoint prevOut, long time,
+                          byte[] pubKey, BigInteger coinbaseValue) {
         Block b = new Block(params);
         b.setDifficultyTarget(difficultyTarget);
-        b.addCoinbaseTransaction(EMPTY_BYTES);
+        b.addCoinbaseTransaction(pubKey, coinbaseValue);
 
-        // Add a transaction paying 50 coins to the "to" address.
-        Transaction t = new Transaction(params);
-        t.addOutput(new TransactionOutput(params, t, Utils.toNanoCoins(50, 0), to));
-        // The input does not really need to be a valid signature, as long as it has the right general form.
-        TransactionInput input = new TransactionInput(params, t, Script.createInputScript(EMPTY_BYTES, EMPTY_BYTES));
-        // Importantly the outpoint hash cannot be zero as that's how we detect a coinbase transaction in isolation
-        // but it must be unique to avoid 'different' transactions looking the same.
-        byte[] counter = new byte[32];
-        counter[0] = (byte) txCounter++;
-        input.getOutpoint().setHash(new Sha256Hash(counter));
-        t.addInput(input);
-        b.addTransaction(t);
+        if (to != null) {
+            // Add a transaction paying 50 coins to the "to" address.
+            Transaction t = new Transaction(params);
+            t.addOutput(new TransactionOutput(params, t, Utils.toNanoCoins(50, 0), to));
+            // The input does not really need to be a valid signature, as long as it has the right general form.
+            TransactionInput input;
+            if (prevOut == null) {
+                input = new TransactionInput(params, t, Script.createInputScript(EMPTY_BYTES, EMPTY_BYTES));
+                // Importantly the outpoint hash cannot be zero as that's how we detect a coinbase transaction in isolation
+                // but it must be unique to avoid 'different' transactions looking the same.
+                byte[] counter = new byte[32];
+                counter[0] = (byte) txCounter;
+                counter[1] = (byte) (txCounter++ >> 8);
+                input.getOutpoint().setHash(new Sha256Hash(counter));
+            } else {
+                input = new TransactionInput(params, t, Script.createInputScript(EMPTY_BYTES, EMPTY_BYTES), prevOut);
+            }
+            t.addInput(input);
+            b.addTransaction(t);
+        }
 
         b.setPrevBlockHash(getHash());
-        b.setTime(time);
+        // Don't let timestamp go backwards
+        if (getTimeSeconds() >= time)
+            b.setTime(getTimeSeconds() + 1);
+        else
+            b.setTime(time);
         b.solve();
         try {
             b.verifyHeader();
@@ -872,45 +1027,52 @@ public class Block extends Message {
         return b;
     }
 
-    // Visible for testing.
-    public Block createNextBlock(Address to) {
-        return createNextBlock(to, Utils.now().getTime() / 1000);
+    @VisibleForTesting
+    public Block createNextBlock(@Nullable Address to, TransactionOutPoint prevOut) {
+        return createNextBlock(to, prevOut, Utils.currentTimeMillis() / 1000, EMPTY_BYTES, Utils.toNanoCoins(50, 0));
+    }
+
+    @VisibleForTesting
+    public Block createNextBlock(@Nullable Address to, BigInteger value) {
+        return createNextBlock(to, null, Utils.currentTimeMillis() / 1000, EMPTY_BYTES, value);
+    }
+
+    @VisibleForTesting
+    public Block createNextBlock(@Nullable Address to) {
+        return createNextBlock(to, Utils.toNanoCoins(50, 0));
+    }
+
+    @VisibleForTesting
+    public Block createNextBlockWithCoinbase(byte[] pubKey, BigInteger coinbaseValue) {
+        return createNextBlock(null, null, Utils.currentTimeMillis() / 1000, pubKey, coinbaseValue);
     }
 
     /**
-     * Used for unit test
-     *
-     * @return the headerParsed
+     * Create a block sending 50BTC as a coinbase transaction to the public key specified.
+     * This method is intended for test use only.
      */
+    @VisibleForTesting
+    Block createNextBlockWithCoinbase(byte[] pubKey) {
+        return createNextBlock(null, null, Utils.currentTimeMillis() / 1000, pubKey, Utils.toNanoCoins(50, 0));
+    }
+
+    @VisibleForTesting
     boolean isParsedHeader() {
         return headerParsed;
     }
 
-    /**
-     * Used for unit test
-     *
-     * @return the transactionsParsed
-     */
+    @VisibleForTesting
     boolean isParsedTransactions() {
         return transactionsParsed;
     }
 
-    /**
-     * Used for unit test
-     *
-     * @return the headerBytesValid
-     */
+    @VisibleForTesting
     boolean isHeaderBytesValid() {
         return headerBytesValid;
     }
 
-    /**
-     * Used for unit test
-     *
-     * @return the transactionBytesValid
-     */
+    @VisibleForTesting
     boolean isTransactionBytesValid() {
         return transactionBytesValid;
     }
-
 }

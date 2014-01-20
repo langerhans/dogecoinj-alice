@@ -16,29 +16,52 @@
 
 package com.google.bitcoin.core;
 
+import com.google.common.base.Charsets;
+import com.google.common.primitives.UnsignedLongs;
 import org.spongycastle.crypto.digests.RIPEMD160Digest;
+import org.spongycastle.util.encoders.Hex;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
 
 /**
- * A collection of various utility methods that are helpful for working with the BitCoin protocol.
+ * A collection of various utility methods that are helpful for working with the Bitcoin protocol.
  * To enable debug logging from the library, run with -Dbitcoinj.logging=true on your command line.
  */
 public class Utils {
+    public static final BigInteger NEGATIVE_ONE = BigInteger.valueOf(-1);
+    private static final MessageDigest digest;
+    static {
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);  // Can't happen.
+        }
+    }
+
+    /** The string that prefixes all text messages signed using Bitcoin keys. */
+    public static final String BITCOIN_SIGNED_MESSAGE_HEADER = "Bitcoin Signed Message:\n";
+    public static final byte[] BITCOIN_SIGNED_MESSAGE_HEADER_BYTES = BITCOIN_SIGNED_MESSAGE_HEADER.getBytes(Charsets.UTF_8);
+
     // TODO: Replace this nanocoins business with something better.
 
     /**
-     * How many "nanocoins" there are in a BitCoin.
+     * How many "nanocoins" there are in a Bitcoin.
      * <p/>
-     * A nanocoin is the smallest unit that can be transferred using BitCoin.
+     * A nanocoin is the smallest unit that can be transferred using Bitcoin.
      * The term nanocoin is very misleading, though, because there are only 100 million
      * of them in a coin (whereas one would expect 1 billion.
      */
@@ -47,17 +70,21 @@ public class Utils {
     /**
      * How many "nanocoins" there are in 0.01 BitCoins.
      * <p/>
-     * A nanocoin is the smallest unit that can be transferred using BitCoin.
+     * A nanocoin is the smallest unit that can be transferred using Bitcoin.
      * The term nanocoin is very misleading, though, because there are only 100 million
      * of them in a coin (whereas one would expect 1 billion).
      */
     public static final BigInteger CENT = new BigInteger("1000000", 10);
+    private static BlockingQueue<Boolean> mockSleepQueue;
 
     /**
      * Convert an amount expressed in the way humans are used to into nanocoins.
      */
     public static BigInteger toNanoCoins(int coins, int cents) {
         checkArgument(cents < 100);
+        checkArgument(cents >= 0);
+        checkArgument(coins >= 0);
+        checkArgument(coins < NetworkParameters.MAX_MONEY.divide(Utils.COIN).longValue());
         BigInteger bi = BigInteger.valueOf(coins).multiply(COIN);
         bi = bi.add(BigInteger.valueOf(cents).multiply(CENT));
         return bi;
@@ -89,10 +116,15 @@ public class Utils {
      * This takes string in a format understood by {@link BigDecimal#BigDecimal(String)},
      * for example "0", "1", "0.10", "1.23E3", "1234.5E-5".
      *
-     * @throws ArithmeticException if you try to specify fractional nanocoins
+     * @throws ArithmeticException if you try to specify fractional nanocoins, or nanocoins out of range.
      */
     public static BigInteger toNanoCoins(String coins) {
-        return new BigDecimal(coins).movePointRight(8).toBigIntegerExact();
+        BigInteger bigint = new BigDecimal(coins).movePointRight(8).toBigIntegerExact();
+        if (bigint.compareTo(BigInteger.ZERO) < 0)
+            throw new ArithmeticException("Negative coins specified");
+        if (bigint.compareTo(NetworkParameters.MAX_MONEY) > 0)
+            throw new ArithmeticException("Amount larger than the total quantity of Bitcoins possible specified.");
+        return bigint;
     }
 
     public static void uint32ToByteArrayBE(long val, byte[] out, int offset) {
@@ -109,11 +141,33 @@ public class Utils {
         out[offset + 3] = (byte) (0xFF & (val >> 24));
     }
 
+    public static void uint64ToByteArrayLE(long val, byte[] out, int offset) {
+        out[offset + 0] = (byte) (0xFF & (val >> 0));
+        out[offset + 1] = (byte) (0xFF & (val >> 8));
+        out[offset + 2] = (byte) (0xFF & (val >> 16));
+        out[offset + 3] = (byte) (0xFF & (val >> 24));
+        out[offset + 4] = (byte) (0xFF & (val >> 32));
+        out[offset + 5] = (byte) (0xFF & (val >> 40));
+        out[offset + 6] = (byte) (0xFF & (val >> 48));
+        out[offset + 7] = (byte) (0xFF & (val >> 56));
+    }
+
     public static void uint32ToByteStreamLE(long val, OutputStream stream) throws IOException {
         stream.write((int) (0xFF & (val >> 0)));
         stream.write((int) (0xFF & (val >> 8)));
         stream.write((int) (0xFF & (val >> 16)));
         stream.write((int) (0xFF & (val >> 24)));
+    }
+    
+    public static void int64ToByteStreamLE(long val, OutputStream stream) throws IOException {
+        stream.write((int) (0xFF & (val >> 0)));
+        stream.write((int) (0xFF & (val >> 8)));
+        stream.write((int) (0xFF & (val >> 16)));
+        stream.write((int) (0xFF & (val >> 24)));
+        stream.write((int) (0xFF & (val >> 32)));
+        stream.write((int) (0xFF & (val >> 40)));
+        stream.write((int) (0xFF & (val >> 48)));
+        stream.write((int) (0xFF & (val >> 56)));
     }
 
     public static void uint64ToByteStreamLE(BigInteger val, OutputStream stream) throws IOException {
@@ -138,26 +192,22 @@ public class Utils {
 
     /**
      * Calculates the SHA-256 hash of the given byte range, and then hashes the resulting hash again. This is
-     * standard procedure in BitCoin. The resulting hash is in big endian form.
+     * standard procedure in Bitcoin. The resulting hash is in big endian form.
      */
     public static byte[] doubleDigest(byte[] input, int offset, int length) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        synchronized (digest) {
+            digest.reset();
             digest.update(input, offset, length);
             byte[] first = digest.digest();
             return digest.digest(first);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);  // Cannot happen.
         }
     }
 
     public static byte[] singleDigest(byte[] input, int offset, int length) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        synchronized (digest) {
+            digest.reset();
             digest.update(input, offset, length);
             return digest.digest();
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);  // Cannot happen.
         }
     }
 
@@ -166,14 +216,12 @@ public class Utils {
      */
     public static byte[] doubleDigestTwoBuffers(byte[] input1, int offset1, int length1,
                                                 byte[] input2, int offset2, int length2) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        synchronized (digest) {
+            digest.reset();
             digest.update(input1, offset1, length1);
             digest.update(input2, offset2, length2);
             byte[] first = digest.digest();
             return digest.digest(first);
-        } catch (NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);  // Cannot happen.
         }
     }
 
@@ -181,7 +229,7 @@ public class Utils {
      * Work around lack of unsigned types in Java.
      */
     public static boolean isLessThanUnsigned(long n1, long n2) {
-        return (n1 < n2) ^ ((n1 < 0) != (n2 < 0));
+        return UnsignedLongs.compare(n1, n2) < 0;
     }
 
     /**
@@ -238,6 +286,17 @@ public class Utils {
                 ((bytes[offset++] & 0xFFL) << 16) |
                 ((bytes[offset] & 0xFFL) << 24);
     }
+    
+    public static long readInt64(byte[] bytes, int offset) {
+        return ((bytes[offset++] & 0xFFL) << 0) |
+               ((bytes[offset++] & 0xFFL) << 8) |
+               ((bytes[offset++] & 0xFFL) << 16) |
+               ((bytes[offset++] & 0xFFL) << 24) |
+               ((bytes[offset++] & 0xFFL) << 32) |
+               ((bytes[offset++] & 0xFFL) << 40) |
+               ((bytes[offset++] & 0xFFL) << 48) |
+               ((bytes[offset] & 0xFFL) << 56);
+    }
 
     public static long readUint32BE(byte[] bytes, int offset) {
         return ((bytes[offset + 0] & 0xFFL) << 24) |
@@ -267,15 +326,26 @@ public class Utils {
     }
 
     /**
-     * Returns the given value in nanocoins as a 0.12 type string.
+     * Returns the given value in nanocoins as a 0.12 type string. More digits after the decimal place will be used
+     * if necessary, but two will always be present.
      */
     public static String bitcoinValueToFriendlyString(BigInteger value) {
+        // TODO: This API is crap. This method should go away when we encapsulate money values.
         boolean negative = value.compareTo(BigInteger.ZERO) < 0;
         if (negative)
             value = value.negate();
-        BigInteger coins = value.divide(COIN);
-        BigInteger cents = value.remainder(COIN);
-        return String.format("%s%d.%02d", negative ? "-" : "", coins.intValue(), cents.intValue() / 1000000);
+        BigDecimal bd = new BigDecimal(value, 8);
+        String formatted = bd.toPlainString();   // Don't use scientific notation.
+        int decimalPoint = formatted.indexOf(".");
+        // Drop unnecessary zeros from the end.
+        int toDelete = 0;
+        for (int i = formatted.length() - 1; i > decimalPoint + 2; i--) {
+            if (formatted.charAt(i) == '0')
+                toDelete++;
+            else
+                break;
+        }
+        return (negative ? "-" : "") + formatted.substring(0, formatted.length() - toDelete);
     }
     
     /**
@@ -301,13 +371,64 @@ public class Utils {
     /**
      * MPI encoded numbers are produced by the OpenSSL BN_bn2mpi function. They consist of
      * a 4 byte big endian length field, followed by the stated number of bytes representing
-     * the number in big endian format.
+     * the number in big endian format (with a sign bit).
+     * @param hasLength can be set to false if the given array is missing the 4 byte length field
      */
-    static BigInteger decodeMPI(byte[] mpi) {
-        int length = (int) readUint32BE(mpi, 0);
-        byte[] buf = new byte[length];
-        System.arraycopy(mpi, 4, buf, 0, length);
-        return new BigInteger(buf);
+    public static BigInteger decodeMPI(byte[] mpi, boolean hasLength) {
+        byte[] buf;
+        if (hasLength) {
+            int length = (int) readUint32BE(mpi, 0);
+            buf = new byte[length];
+            System.arraycopy(mpi, 4, buf, 0, length);
+        } else
+            buf = mpi;
+        if (buf.length == 0)
+            return BigInteger.ZERO;
+        boolean isNegative = (buf[0] & 0x80) == 0x80;
+        if (isNegative)
+            buf[0] &= 0x7f;
+        BigInteger result = new BigInteger(buf);
+        return isNegative ? result.negate() : result;
+    }
+    
+    /**
+     * MPI encoded numbers are produced by the OpenSSL BN_bn2mpi function. They consist of
+     * a 4 byte big endian length field, followed by the stated number of bytes representing
+     * the number in big endian format (with a sign bit).
+     * @param includeLength indicates whether the 4 byte length field should be included
+     */
+    public static byte[] encodeMPI(BigInteger value, boolean includeLength) {
+        if (value.equals(BigInteger.ZERO)) {
+            if (!includeLength)
+                return new byte[] {};
+            else
+                return new byte[] {0x00, 0x00, 0x00, 0x00};
+        }
+        boolean isNegative = value.compareTo(BigInteger.ZERO) < 0;
+        if (isNegative)
+            value = value.negate();
+        byte[] array = value.toByteArray();
+        int length = array.length;
+        if ((array[0] & 0x80) == 0x80)
+            length++;
+        if (includeLength) {
+            byte[] result = new byte[length + 4];
+            System.arraycopy(array, 0, result, length - array.length + 3, array.length);
+            uint32ToByteArrayBE(length, result, 0);
+            if (isNegative)
+                result[4] |= 0x80;
+            return result;
+        } else {
+            byte[] result;
+            if (length != array.length) {
+                result = new byte[length];
+                System.arraycopy(array, 0, result, 1, array.length);
+            }else
+                result = array;
+            if (isNegative)
+                result[0] |= 0x80;
+            return result;
+        }
     }
 
     // The representation of nBits uses another home-brew encoding, as a way to represent a large
@@ -319,22 +440,36 @@ public class Utils {
         if (size >= 1) bytes[4] = (byte) ((compact >> 16) & 0xFF);
         if (size >= 2) bytes[5] = (byte) ((compact >> 8) & 0xFF);
         if (size >= 3) bytes[6] = (byte) ((compact >> 0) & 0xFF);
-        return decodeMPI(bytes);
+        return decodeMPI(bytes, true);
     }
 
     /**
      * If non-null, overrides the return value of now().
      */
-    public static Date mockTime;
+    public static volatile Date mockTime;
 
     /**
      * Advances (or rewinds) the mock clock by the given number of seconds.
      */
     public static Date rollMockClock(int seconds) {
+        return rollMockClockMillis(seconds * 1000);
+    }
+
+    /**
+     * Advances (or rewinds) the mock clock by the given number of milliseconds.
+     */
+    public static Date rollMockClockMillis(long millis) {
         if (mockTime == null)
             mockTime = new Date();
-        mockTime = new Date(mockTime.getTime() + (seconds * 1000));
+        mockTime = new Date(mockTime.getTime() + millis);
         return mockTime;
+    }
+
+    /**
+     * Sets the mock clock to the given time (in seconds)
+     */
+    public static void setMockClock(long mockClock) {
+        mockTime = new Date(mockClock * 1000);
     }
 
     /**
@@ -346,6 +481,14 @@ public class Utils {
         else
             return new Date();
     }
+
+    /** Returns the current time in seconds since the epoch, or a mocked out equivalent. */
+    public static long currentTimeMillis() {
+        if (mockTime != null)
+            return mockTime.getTime();
+        else
+            return System.currentTimeMillis();
+    }
     
     public static byte[] copyOf(byte[] in, int length) {
         byte[] out = new byte[length];
@@ -354,21 +497,103 @@ public class Utils {
     }
 
     /**
+     * Creates a copy of bytes and appends b to the end of it
+     */
+    public static byte[] appendByte(byte[] bytes, byte b) {
+        byte[] result = Arrays.copyOf(bytes, bytes.length + 1);
+        result[result.length - 1] = b;
+        return result;
+    }
+
+    /**
      * Attempts to parse the given string as arbitrary-length hex or base58 and then return the results, or null if
      * neither parse was successful.
      */
-    public static BigInteger parseAsHexOrBase58(String data) {
-        BigInteger decode;
+    public static byte[] parseAsHexOrBase58(String data) {
         try {
-            decode = new BigInteger(data, 16);
+            return Hex.decode(data);
         } catch (Exception e) {
             // Didn't decode as hex, try base58.
             try {
-                decode = new BigInteger(1, Base58.decodeChecked(data));
+                return Base58.decodeChecked(data);
             } catch (AddressFormatException e1) {
                 return null;
             }
         }
-        return decode;
+    }
+
+    public static boolean isWindows() {
+        return System.getProperty("os.name").toLowerCase().contains("win");
+    }
+
+    /**
+     * <p>Given a textual message, returns a byte buffer formatted as follows:</p>
+     *
+     * <tt><p>[24] "Bitcoin Signed Message:\n" [message.length as a varint] message</p></tt>
+     */
+    public static byte[] formatMessageForSigning(String message) {
+        try {
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            bos.write(BITCOIN_SIGNED_MESSAGE_HEADER_BYTES.length);
+            bos.write(BITCOIN_SIGNED_MESSAGE_HEADER_BYTES);
+            byte[] messageBytes = message.getBytes(Charsets.UTF_8);
+            VarInt size = new VarInt(messageBytes.length);
+            bos.write(size.encode());
+            bos.write(messageBytes);
+            return bos.toByteArray();
+        } catch (IOException e) {
+            throw new RuntimeException(e);  // Cannot happen.
+        }
+    }
+    
+    // 00000001, 00000010, 00000100, 00001000, ...
+    private static final int bitMask[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
+    
+    // Checks if the given bit is set in data
+    public static boolean checkBitLE(byte[] data, int index) {
+        return (data[index >>> 3] & bitMask[7 & index]) != 0;
+    }
+    
+    // Sets the given bit in data to one
+    public static void setBitLE(byte[] data, int index) {
+        data[index >>> 3] |= bitMask[7 & index];
+    }
+
+    /** Sleep for a span of time, or mock sleep if enabled */
+    public static void sleep(long millis) {
+        if (mockSleepQueue == null) {
+            sleepUninterruptibly(millis, TimeUnit.MILLISECONDS);
+        } else {
+            try {
+                boolean isMultiPass = mockSleepQueue.take();
+                rollMockClockMillis(millis);
+                if (isMultiPass)
+                    mockSleepQueue.offer(true);
+            } catch (InterruptedException e) {
+                // Ignored.
+            }
+        }
+    }
+
+    /** Enable or disable mock sleep.  If enabled, set mock time to current time. */
+    public static void setMockSleep(boolean isEnable) {
+        if (isEnable) {
+            mockSleepQueue = new ArrayBlockingQueue<Boolean>(1);
+            mockTime = new Date(System.currentTimeMillis());
+        } else {
+            mockSleepQueue = null;
+        }
+    }
+
+    /** Let sleeping thread pass the synchronization point.  */
+    public static void passMockSleep() {
+        mockSleepQueue.offer(false);
+    }
+
+    /** Let the sleeping thread pass the synchronization point any number of times. */
+    public static void finishMockSleep() {
+        if (mockSleepQueue != null) {
+            mockSleepQueue.offer(true);
+        }
     }
 }

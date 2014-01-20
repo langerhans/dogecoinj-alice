@@ -26,11 +26,9 @@ import java.util.Arrays;
 import static com.google.common.base.Preconditions.checkState;
 
 /**
- * A Message is a data structure that can be serialized/deserialized using both the BitCoin proprietary serialization
+ * <p>A Message is a data structure that can be serialized/deserialized using both the Bitcoin proprietary serialization
  * format and built-in Java object serialization. Specific types of messages that are used both in the block chain,
- * and on the wire, are derived from this class.
- * <p/>
- * This class is not useful for library users. If you want to talk to the network see the {@link Peer} class.
+ * and on the wire, are derived from this class.</p>
  */
 public abstract class Message implements Serializable {
     private static final Logger log = LoggerFactory.getLogger(Message.class);
@@ -38,7 +36,7 @@ public abstract class Message implements Serializable {
 
     public static final int MAX_SIZE = 0x02000000;
 
-    public static final int UNKNOWN_LENGTH = -1;
+    public static final int UNKNOWN_LENGTH = Integer.MIN_VALUE;
 
     // Useful to ensure serialize/deserialize are consistent with each other.
     private static final boolean SELF_CHECK = false;
@@ -117,10 +115,10 @@ public abstract class Message implements Serializable {
             parsed = true;
         }
 
-        checkState(this.length != UNKNOWN_LENGTH,
-                "Length field has not been set in constructor for %s after %s parse. " +
-                        "Refer to Message.parseLite() for detail of required Length field contract.",
-                getClass().getSimpleName(), parseLazy ? "lite" : "full");
+        if (this.length == UNKNOWN_LENGTH)
+            checkState(false, "Length field has not been set in constructor for %s after %s parse. " +
+                              "Refer to Message.parseLite() for detail of required Length field contract.",
+                       getClass().getSimpleName(), parseLazy ? "lite" : "full");
         
         if (SELF_CHECK) {
             selfCheck(msg, offset);
@@ -152,7 +150,7 @@ public abstract class Message implements Serializable {
         this(params, msg, offset, NetworkParameters.PROTOCOL_VERSION, parseLazy, parseRetain, length);
     }
 
-    // These methods handle the serialization/deserialization using the custom BitCoin protocol.
+    // These methods handle the serialization/deserialization using the custom Bitcoin protocol.
     // It's somewhat painful to work with in Java, so some of these objects support a second 
     // serialization mechanism - the standard Java serialization system. This is used when things 
     // are serialized to the wallet.
@@ -223,10 +221,20 @@ public abstract class Message implements Serializable {
         recached = false;
     }
 
-    protected void adjustLength(int adjustment) {
-        if (length != UNKNOWN_LENGTH)
-            // Our own length is now unknown if we have an unknown length adjustment.
-            length = adjustment == UNKNOWN_LENGTH ? UNKNOWN_LENGTH : length + adjustment;
+    protected void adjustLength(int newArraySize, int adjustment) {
+        if (length == UNKNOWN_LENGTH)
+            return;
+        // Our own length is now unknown if we have an unknown length adjustment.
+        if (adjustment == UNKNOWN_LENGTH) {
+            length = UNKNOWN_LENGTH;
+            return;
+        }
+        length += adjustment;
+        // Check if we will need more bytes to encode the length prefix.
+        if (newArraySize == 1)
+            length++;  // The assumption here is we never call adjustLength with the same arraySize as before.
+        else if (newArraySize != 0)
+            length += VarInt.sizeOf(newArraySize) - VarInt.sizeOf(newArraySize - 1);
     }
 
     /**
@@ -364,17 +372,15 @@ public abstract class Message implements Serializable {
      * Serializes this message to the provided stream. If you just want the raw bytes use bitcoinSerialize().
      */
     void bitcoinSerializeToStream(OutputStream stream) throws IOException {
-        log.debug("Warning: {} class has not implemented bitcoinSerializeToStream method.  Generating message with no payload", getClass());
+        log.error("Error: {} class has not implemented bitcoinSerializeToStream method.  Generating message with no payload", getClass());
     }
 
     /**
      * This method is a NOP for all classes except Block and Transaction.  It is only declared in Message
      * so BitcoinSerializer can avoid 2 instanceof checks + a casting.
-     *
-     * @return
      */
     public Sha256Hash getHash() {
-        return null;
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -382,82 +388,124 @@ public abstract class Message implements Serializable {
      * implemented in a subclass of ChildMessage lazy parsing may have no effect.
      *
      * This default implementation is a safe fall back that will ensure it returns a correct value by parsing the message.
-     *
-     * @return
      */
-    int getMessageSize() {
+    public int getMessageSize() {
         if (length != UNKNOWN_LENGTH)
             return length;
         maybeParse();
-        checkState(length != UNKNOWN_LENGTH,
-                "Length field has not been set in %s after full parse.", getClass().getSimpleName());
+        if (length == UNKNOWN_LENGTH)
+            checkState(false, "Length field has not been set in %s after full parse.", getClass().getSimpleName());
         return length;
     }
 
-    long readUint32() {
-        long u = Utils.readUint32(bytes, cursor);
-        cursor += 4;
-        return u;
+    long readUint32() throws ProtocolException {
+        try {
+            long u = Utils.readUint32(bytes, cursor);
+            cursor += 4;
+            return u;
+        } catch (ArrayIndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        }
     }
 
-    Sha256Hash readHash() {
-        byte[] hash = new byte[32];
-        System.arraycopy(bytes, cursor, hash, 0, 32);
-        // We have to flip it around, as it's been read off the wire in little endian.
-        // Not the most efficient way to do this but the clearest.
-        hash = Utils.reverseBytes(hash);
-        cursor += 32;
-        return new Sha256Hash(hash);
+    Sha256Hash readHash() throws ProtocolException {
+        try {
+            byte[] hash = new byte[32];
+            System.arraycopy(bytes, cursor, hash, 0, 32);
+            // We have to flip it around, as it's been read off the wire in little endian.
+            // Not the most efficient way to do this but the clearest.
+            hash = Utils.reverseBytes(hash);
+            cursor += 32;
+            return new Sha256Hash(hash);
+        } catch (IndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        }
     }
 
-
-    BigInteger readUint64() {
-        // Java does not have an unsigned 64 bit type. So scrape it off the wire then flip.
-        byte[] valbytes = new byte[8];
-        System.arraycopy(bytes, cursor, valbytes, 0, 8);
-        valbytes = Utils.reverseBytes(valbytes);
-        cursor += valbytes.length;
-        return new BigInteger(valbytes);
+    long readInt64() throws ProtocolException {
+        try {
+            long u = Utils.readInt64(bytes, cursor);
+            cursor += 8;
+            return u;
+        } catch (ArrayIndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        }
     }
 
-    long readVarInt() {
+    BigInteger readUint64() throws ProtocolException {
+        try {
+            // Java does not have an unsigned 64 bit type. So scrape it off the wire then flip.
+            byte[] valbytes = new byte[8];
+            System.arraycopy(bytes, cursor, valbytes, 0, 8);
+            valbytes = Utils.reverseBytes(valbytes);
+            cursor += valbytes.length;
+            return new BigInteger(valbytes);
+        } catch (IndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        }
+    }
+
+    long readVarInt() throws ProtocolException {
         return readVarInt(0);
     }
 
-    long readVarInt(int offset) {
-        VarInt varint = new VarInt(bytes, cursor + offset);
-        cursor += offset + varint.getSizeInBytes();
-        return varint.value;
+    long readVarInt(int offset) throws ProtocolException {
+        try {
+            VarInt varint = new VarInt(bytes, cursor + offset);
+            cursor += offset + varint.getOriginalSizeInBytes();
+            return varint.value;
+        } catch (ArrayIndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        }
     }
 
 
-    byte[] readBytes(int length) {
-        byte[] b = new byte[length];
-        System.arraycopy(bytes, cursor, b, 0, length);
-        cursor += length;
-        return b;
+    byte[] readBytes(int length) throws ProtocolException {
+        try {
+            byte[] b = new byte[length];
+            System.arraycopy(bytes, cursor, b, 0, length);
+            cursor += length;
+            return b;
+        } catch (IndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        }
     }
     
-    byte[] readByteArray() {
+    byte[] readByteArray() throws ProtocolException {
         long len = readVarInt();
         return readBytes((int)len);
     }
 
-    String readStr() {
-        VarInt varInt = new VarInt(bytes, cursor);
-        if (varInt.value == 0) {
-            cursor += 1;
-            return "";
-        }
-        cursor += varInt.getSizeInBytes();
-        byte[] characters = new byte[(int) varInt.value];
-        System.arraycopy(bytes, cursor, characters, 0, characters.length);
-        cursor += characters.length;
+    String readStr() throws ProtocolException {
         try {
-            return new String(characters, "UTF-8");
-        } catch (UnsupportedEncodingException e) {
-            throw new RuntimeException(e);  // Cannot happen, UTF-8 is always supported.
+            VarInt varInt = new VarInt(bytes, cursor);
+            if (varInt.value == 0) {
+                cursor += 1;
+                return "";
+            }
+            cursor += varInt.getOriginalSizeInBytes();
+            byte[] characters = new byte[(int) varInt.value];
+            System.arraycopy(bytes, cursor, characters, 0, characters.length);
+            cursor += characters.length;
+            try {
+                return new String(characters, "UTF-8");
+            } catch (UnsupportedEncodingException e) {
+                throw new RuntimeException(e);  // Cannot happen, UTF-8 is always supported.
+            }
+        } catch (ArrayIndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
+        } catch (IndexOutOfBoundsException e) {
+            throw new ProtocolException(e);
         }
+    }
+    
+    boolean hasMoreBytes() {
+        return cursor < bytes.length;
+    }
+
+    /** Network parameters this message was created with. */
+    public NetworkParameters getParams() {
+        return params;
     }
 
     public static class LazyParseException extends RuntimeException {

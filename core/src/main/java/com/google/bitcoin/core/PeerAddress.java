@@ -16,6 +16,8 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.params.MainNetParams;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigInteger;
@@ -25,10 +27,11 @@ import java.net.UnknownHostException;
 
 import static com.google.bitcoin.core.Utils.uint32ToByteStreamLE;
 import static com.google.bitcoin.core.Utils.uint64ToByteStreamLE;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 /**
  * A PeerAddress holds an IP address and port number representing the network location of
- * a peer in the BitCoin P2P network. It exists primarily for serialization purposes.
+ * a peer in the Bitcoin P2P network. It exists primarily for serialization purposes.
  */
 public class PeerAddress extends ChildMessage {
     private static final long serialVersionUID = 7501293709324197411L;
@@ -56,8 +59,6 @@ public class PeerAddress extends ChildMessage {
      * @param parseRetain Whether to retain the backing byte array for quick reserialization.  
      * If true and the backing byte array is invalidated due to modification of a field then 
      * the cached bytes may be repopulated and retained if the message is serialized again in the future.
-     * @param length The length of message if known.  Usually this is provided when deserializing of the wire
-     * as the length will be provided as part of the header.  If unknown then set to Message.UNKNOWN_LENGTH
      * @throws ProtocolException
      */
     public PeerAddress(NetworkParameters params, byte[] msg, int offset, int protocolVersion, Message parent, boolean parseLazy,
@@ -73,7 +74,7 @@ public class PeerAddress extends ChildMessage {
      * Construct a peer address from a memorized or hardcoded address.
      */
     public PeerAddress(InetAddress addr, int port, int protocolVersion) {
-        this.addr = addr;
+        this.addr = checkNotNull(addr);
         this.port = port;
         this.protocolVersion = protocolVersion;
         this.services = BigInteger.ZERO;
@@ -91,11 +92,19 @@ public class PeerAddress extends ChildMessage {
      * Constructs a peer address from the given IP address. Port and protocol version are default for the prodnet.
      */
     public PeerAddress(InetAddress addr) {
-        this(addr, NetworkParameters.prodNet().port);
+        this(addr, MainNetParams.get().getPort());
     }
 
     public PeerAddress(InetSocketAddress addr) {
         this(addr.getAddress(), addr.getPort());
+    }
+
+    public static PeerAddress localhost(NetworkParameters params) {
+        try {
+            return new PeerAddress(InetAddress.getLocalHost(), params.getPort());
+        } catch (UnknownHostException e) {
+            throw new RuntimeException(e);  // Broken system.
+        }
     }
 
     @Override
@@ -104,7 +113,7 @@ public class PeerAddress extends ChildMessage {
             //TODO this appears to be dynamic because the client only ever sends out it's own address
             //so assumes itself to be up.  For a fuller implementation this needs to be dynamic only if
             //the address refers to this client.
-            int secs = (int) (Utils.now().getTime() / 1000);
+            int secs = (int) (Utils.currentTimeMillis() / 1000);
             uint32ToByteStreamLE(secs, stream);
         }
         uint64ToByteStreamLE(services, stream);  // nServices.
@@ -128,7 +137,7 @@ public class PeerAddress extends ChildMessage {
     }
 
     @Override
-    protected void parse() {
+    protected void parse() throws ProtocolException {
         // Format of a serialized address:
         //   uint32 timestamp
         //   uint64 services   (flags determining what the node can do)
@@ -152,8 +161,8 @@ public class PeerAddress extends ChildMessage {
       * @see Message#getMessageSize()
       */
     @Override
-    int getMessageSize() {
-    	// The 4 byte difference is the uint32 timestamp that was introduced in version 31402 
+    public int getMessageSize() {
+        // The 4 byte difference is the uint32 timestamp that was introduced in version 31402 
         length = protocolVersion > 31402 ? MESSAGE_SIZE : MESSAGE_SIZE - 4;
         return length;
     }
@@ -243,10 +252,15 @@ public class PeerAddress extends ChildMessage {
                 other.port == port &&
                 other.services.equals(services) &&
                 other.time == time;
+        //FIXME including services and time could cause same peer to be added multiple times in collections
     }
 
     @Override
     public int hashCode() {
         return addr.hashCode() ^ port ^ (int) time ^ services.hashCode();
+    }
+    
+    public InetSocketAddress toSocketAddress() {
+        return new InetSocketAddress(addr, port);
     }
 }

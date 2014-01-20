@@ -16,6 +16,9 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.script.Script;
+
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.ObjectOutputStream;
 import java.io.OutputStream;
@@ -41,7 +44,7 @@ public class TransactionOutPoint extends ChildMessage implements Serializable {
     // It points to the connected transaction.
     Transaction fromTx;
 
-    public TransactionOutPoint(NetworkParameters params, long index, Transaction fromTx) {
+    public TransactionOutPoint(NetworkParameters params, long index, @Nullable Transaction fromTx) {
         super(params);
         this.index = index;
         if (fromTx != null) {
@@ -97,7 +100,7 @@ public class TransactionOutPoint extends ChildMessage implements Serializable {
       * @see Message#getMessageSize()
       */
     @Override
-    int getMessageSize() {
+    public int getMessageSize() {
         return MESSAGE_LENGTH;
     }
 
@@ -112,54 +115,68 @@ public class TransactionOutPoint extends ChildMessage implements Serializable {
      * sides in memory, and they have been linked together, this returns a pointer to the connected output, or null
      * if there is no such connection.
      */
-    TransactionOutput getConnectedOutput() {
+    @Nullable
+    public TransactionOutput getConnectedOutput() {
         if (fromTx == null) return null;
         return fromTx.getOutputs().get((int) index);
     }
 
     /**
      * Returns the pubkey script from the connected output.
+     * @throws java.lang.NullPointerException if there is no connected output.
      */
     byte[] getConnectedPubKeyScript() {
-        byte[] result = checkNotNull(getConnectedOutput().getScriptBytes());
+        byte[] result = checkNotNull(getConnectedOutput()).getScriptBytes();
         checkState(result.length > 0);
         return result;
     }
 
     /**
-     * Convenience method to get the connected outputs pubkey hash.
+     * Returns the ECKey identified in the connected output, for either pay-to-address scripts or pay-to-key scripts.
+     * If the script forms cannot be understood, throws ScriptException.
+     * @return an ECKey or null if the connected key cannot be found in the wallet.
      */
-    byte[] getConnectedPubKeyHash() throws ScriptException {
-        return getConnectedOutput().getScriptPubKey().getPubKeyHash();
+    @Nullable
+    public ECKey getConnectedKey(Wallet wallet) throws ScriptException {
+        TransactionOutput connectedOutput = getConnectedOutput();
+        checkNotNull(connectedOutput, "Input is not connected so cannot retrieve key");
+        Script connectedScript = connectedOutput.getScriptPubKey();
+        if (connectedScript.isSentToAddress()) {
+            byte[] addressBytes = connectedScript.getPubKeyHash();
+            return wallet.findKeyFromPubHash(addressBytes);
+        } else if (connectedScript.isSentToRawPubKey()) {
+            byte[] pubkeyBytes = connectedScript.getPubKey();
+            return wallet.findKeyFromPubKey(pubkeyBytes);
+        } else {
+            throw new ScriptException("Could not understand form of connected output script: " + connectedScript);
+        }
     }
 
     @Override
     public String toString() {
-        return "outpoint " + hash.toString() + ":" + index;
+        return hash.toString() + ":" + index;
     }
 
 
     /**
-     * @return the hash
+     * Returns the hash of the transaction this outpoint references/spends/is connected to.
      */
     public Sha256Hash getHash() {
         maybeParse();
         return hash;
     }
 
-    /**
-     * @param hash the hash to set
-     */
     void setHash(Sha256Hash hash) {
         this.hash = hash;
     }
 
-    /**
-     * @return the index
-     */
     public long getIndex() {
         maybeParse();
         return index;
+    }
+    
+    public void setIndex(long index) {
+        this.index = index;
     }
 
     /**

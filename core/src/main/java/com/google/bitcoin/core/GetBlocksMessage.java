@@ -21,6 +21,10 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Represents the "getblocks" P2P network message, which requests the hashes of the parts of the block chain we're
+ * missing. Those blocks can then be downloaded with a {@link GetDataMessage}.
+ */
 public class GetBlocksMessage extends Message {
     private static final long serialVersionUID = 3479412877853645644L;
     protected long version;
@@ -34,8 +38,17 @@ public class GetBlocksMessage extends Message {
         this.stopHash = stopHash;
     }
 
+    public GetBlocksMessage(NetworkParameters params, byte[] msg) throws ProtocolException {
+        super(params, msg, 0);
+    }
+
     protected void parseLite() throws ProtocolException {
-        // NOP.  This is a root level message and should always be provided with a length.
+        cursor = offset;
+        version = readUint32();
+        int startCount = (int) readVarInt();
+        if (startCount > 500)
+            throw new ProtocolException("Number of locators cannot be > 500, received: " + startCount);
+        length = (int) (cursor - offset + ((startCount + 1) * 32));
     }
 
     public void parse() throws ProtocolException {
@@ -81,7 +94,7 @@ public class GetBlocksMessage extends Message {
             stream.write(Utils.reverseBytes(hash.getBytes()));
         }
         // Next, a block ID to stop at.
-        stream.write(stopHash.getBytes());
+        stream.write(Utils.reverseBytes(stopHash.getBytes()));
     }
 
     @Override
@@ -96,7 +109,7 @@ public class GetBlocksMessage extends Message {
     @Override
     public int hashCode() {
         int hashCode = (int) version ^ "getblocks".hashCode();
-        for (int i = 0; i < locator.size(); i++) hashCode ^= locator.get(i).hashCode();
+        for (Sha256Hash aLocator : locator) hashCode ^= aLocator.hashCode();
         hashCode ^= stopHash.hashCode();
         return hashCode;
     }

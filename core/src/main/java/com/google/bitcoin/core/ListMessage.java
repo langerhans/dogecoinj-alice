@@ -23,16 +23,16 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Abstract superclass of classes with list based payload, i.e. InventoryMessage and GetDataMessage.
+ * Abstract superclass of classes with list based payload, ie InventoryMessage and GetDataMessage.
  */
 public abstract class ListMessage extends Message {
     private static final long serialVersionUID = -4275896329391143643L;
 
     private long arrayLen;
     // For some reason the compiler complains if this is inside InventoryItem
-    private List<InventoryItem> items;
+    protected List<InventoryItem> items;
 
-    private static final long MAX_INVENTORY_ITEMS = 50000;
+    public static final long MAX_INVENTORY_ITEMS = 50000;
 
 
     public ListMessage(NetworkParameters params, byte[] bytes) throws ProtocolException {
@@ -99,6 +99,9 @@ public abstract class ListMessage extends Message {
                 case 2:
                     type = InventoryItem.Type.Block;
                     break;
+                case 3:
+                    type = InventoryItem.Type.FilteredBlock;
+                    break;
                 default:
                     throw new ProtocolException("Unknown CInv type: " + typeCode);
             }
@@ -117,5 +120,11 @@ public abstract class ListMessage extends Message {
             // And now the hash.
             stream.write(Utils.reverseBytes(i.hash.getBytes()));
         }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        return o.getClass() == this.getClass() &&
+                ((ListMessage)o).items.equals(this.items);
     }
 }

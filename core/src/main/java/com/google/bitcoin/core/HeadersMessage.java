@@ -19,6 +19,8 @@ package com.google.bitcoin.core;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -46,6 +48,18 @@ public class HeadersMessage extends Message {
     }
 
     @Override
+    public void bitcoinSerializeToStream(OutputStream stream) throws IOException {
+        stream.write(new VarInt(blockHeaders.size()).encode());
+        for (Block header : blockHeaders) {
+            if (header.transactions == null)
+                header.bitcoinSerializeToStream(stream);
+            else
+                header.cloneAsHeader().bitcoinSerializeToStream(stream);
+            stream.write(0);
+        }
+    }
+
+    @Override
     protected void parseLite() throws ProtocolException {
         if (length == UNKNOWN_LENGTH) {
             int saveCursor = cursor;
@@ -70,9 +84,9 @@ public class HeadersMessage extends Message {
             // Read 80 bytes of the header and one more byte for the transaction list, which is always a 00 because the
             // transaction list is empty.
             byte[] blockHeader = readBytes(81);
-            if (blockHeader[80] != 00)
+            if (blockHeader[80] != 0)
                 throw new ProtocolException("Block header does not end with a null byte");
-            Block newBlockHeader = new Block(this.params, blockHeader);
+            Block newBlockHeader = new Block(this.params, blockHeader, true, true, 81);
             blockHeaders.add(newBlockHeader);
         }
 

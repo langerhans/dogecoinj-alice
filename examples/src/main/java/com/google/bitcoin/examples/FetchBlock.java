@@ -17,8 +17,10 @@
 package com.google.bitcoin.examples;
 
 import com.google.bitcoin.core.*;
+import com.google.bitcoin.params.TestNet3Params;
 import com.google.bitcoin.store.BlockStore;
 import com.google.bitcoin.store.MemoryBlockStore;
+import com.google.bitcoin.utils.BriefLogFormatter;
 
 import java.net.InetAddress;
 import java.util.concurrent.Future;
@@ -28,28 +30,24 @@ import java.util.concurrent.Future;
  */
 public class FetchBlock {
     public static void main(String[] args) throws Exception {
+        BriefLogFormatter.init();
         System.out.println("Connecting to node");
-        final NetworkParameters params = NetworkParameters.prodNet();
+        final NetworkParameters params = TestNet3Params.get();
 
         BlockStore blockStore = new MemoryBlockStore(params);
         BlockChain chain = new BlockChain(params, blockStore);
-        final Peer peer = new Peer(params, new PeerAddress(InetAddress.getLocalHost()), chain);
-        peer.connect();
-        new Thread(new Runnable() {
-            public void run() {
-                try {
-                    peer.run();
-                } catch (PeerException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-        }).start();
+        PeerGroup peerGroup = new PeerGroup(params, chain);
+        peerGroup.startAndWait();
+        PeerAddress addr = new PeerAddress(InetAddress.getLocalHost(), params.getPort());
+        peerGroup.addAddress(addr);
+        peerGroup.waitForPeers(1).get();
+        Peer peer = peerGroup.getConnectedPeers().get(0);
 
         Sha256Hash blockHash = new Sha256Hash(args[0]);
         Future<Block> future = peer.getBlock(blockHash);
         System.out.println("Waiting for node to send us the requested block: " + blockHash);
         Block block = future.get();
         System.out.println(block);
-        peer.disconnect();
+        peerGroup.stop();
     }
 }

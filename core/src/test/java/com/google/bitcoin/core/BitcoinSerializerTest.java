@@ -17,15 +17,16 @@
 package com.google.bitcoin.core;
 
 
+import com.google.bitcoin.params.MainNetParams;
 import org.junit.Test;
 import org.spongycastle.util.encoders.Hex;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.*;
 
 public class BitcoinSerializerTest {
     private final byte[] addrMessage = Hex.decode("f9beb4d96164647200000000000000001f000000" +
@@ -52,137 +53,99 @@ public class BitcoinSerializerTest {
             "8B 4E CC 52 88 AC 00 00  00 00");
 
     @Test
-    public void testVersion() throws Exception {
-    	BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), false);
-        // the actual data from https://en.bitcoin.it/wiki/Protocol_specification#version
-        ByteArrayInputStream bais = new ByteArrayInputStream(Hex.decode("f9beb4d976657273696f6e0000000000550000009" +
-                "c7c00000100000000000000e615104d00000000010000000000000000000000000000000000ffff0a000001daf6010000" +
-                "000000000000000000000000000000ffff0a000002208ddd9d202c3ab457130055810100"));
-        VersionMessage vm = (VersionMessage)bs.deserialize(bais);
-        assertEquals(31900, vm.clientVersion);
-        assertEquals(1292899814L, vm.time);
-        assertEquals(98645L, vm.bestHeight);
-
-        // Standard version messsages don't use strings. Create one and round-trip here to check that works OK.
-        vm.subVer = "test string";
-        byte[] bits = vm.bitcoinSerialize();
-        VersionMessage vm2 = new VersionMessage(NetworkParameters.prodNet(), bits);
-        assertEquals(vm, vm2);
-    }
-
-
-    @Test
-    public void testVerack() throws Exception {
-        BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), false);
-        // the actual data from https://en.bitcoin.it/wiki/Protocol_specification#verack
-        ByteArrayInputStream bais = new ByteArrayInputStream(Hex.decode("f9beb4d976657261636b00000000000000000000"));
-        VersionAck va = (VersionAck)bs.deserialize(bais);
-        assertNotNull(va);
-    }
-
-    @Test
     public void testAddr() throws Exception {
-    	BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), true);
+        BitcoinSerializer bs = new BitcoinSerializer(MainNetParams.get());
         // the actual data from https://en.bitcoin.it/wiki/Protocol_specification#addr
-        ByteArrayInputStream bais = new ByteArrayInputStream(addrMessage);
-        AddressMessage a = (AddressMessage)bs.deserialize(bais);
+        AddressMessage a = (AddressMessage)bs.deserialize(ByteBuffer.wrap(addrMessage));
         assertEquals(1, a.getAddresses().size());
         PeerAddress pa = a.getAddresses().get(0);
         assertEquals(8333, pa.getPort());
         assertEquals("10.0.0.1", pa.getAddr().getHostAddress());
         ByteArrayOutputStream bos = new ByteArrayOutputStream(addrMessage.length);
         bs.serialize(a, bos);
-        
+
         //this wont be true due to dynamic timestamps.
         //assertTrue(LazyParseByteCacheTest.arrayContains(bos.toByteArray(), addrMessage));
     }
 
     @Test
     public void testLazyParsing()  throws Exception {
-    	BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), true, true, false);
-    	
-    	ByteArrayInputStream bais = new ByteArrayInputStream(txMessage);
-    	Transaction tx = (Transaction)bs.deserialize(bais);
+        BitcoinSerializer bs = new BitcoinSerializer(MainNetParams.get(), true, false);
+
+    	Transaction tx = (Transaction)bs.deserialize(ByteBuffer.wrap(txMessage));
         assertNotNull(tx);
         assertEquals(false, tx.isParsed());
         assertEquals(true, tx.isCached());
         tx.getInputs();
         assertEquals(true, tx.isParsed());
-        
+
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         bs.serialize(tx, bos);
-        System.out.println(Utils.bytesToHexString(txMessage));
-        System.out.println(Utils.bytesToHexString(bos.toByteArray()));
         assertEquals(true, Arrays.equals(txMessage, bos.toByteArray()));
-        
     }
-    
-    @Test 
+
+    @Test
     public void testCachedParsing()  throws Exception {
-    	testCachedParsing(true);
-    	testCachedParsing(false);
+        testCachedParsing(true);
+        testCachedParsing(false);
     }
-    
+
     private void testCachedParsing(boolean lazy)  throws Exception {
-    	BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), true, lazy, true);
-    	
-    	//first try writing to a fields to ensure uncaching and children are not affected
-    	ByteArrayInputStream bais = new ByteArrayInputStream(txMessage);
-    	Transaction tx = (Transaction)bs.deserialize(bais);
+        BitcoinSerializer bs = new BitcoinSerializer(MainNetParams.get(), lazy, true);
+        
+        //first try writing to a fields to ensure uncaching and children are not affected
+        Transaction tx = (Transaction)bs.deserialize(ByteBuffer.wrap(txMessage));
         assertNotNull(tx);
         assertEquals(!lazy, tx.isParsed());
         assertEquals(true, tx.isCached());
-        
+
         tx.setLockTime(1);
         //parent should have been uncached
         assertEquals(false, tx.isCached());
         //child should remain cached.
         assertEquals(true, tx.getInputs().get(0).isCached());
-        
+
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         bs.serialize(tx, bos);
         assertEquals(true, !Arrays.equals(txMessage, bos.toByteArray()));
-    	
+
       //now try writing to a child to ensure uncaching is propagated up to parent but not to siblings
-    	bais = new ByteArrayInputStream(txMessage);
-    	tx = (Transaction)bs.deserialize(bais);
-    	assertNotNull(tx);
+        tx = (Transaction)bs.deserialize(ByteBuffer.wrap(txMessage));
+        assertNotNull(tx);
         assertEquals(!lazy, tx.isParsed());
         assertEquals(true, tx.isCached());
-        
-        tx.getInputs().get(0).setSequence(1);
+
+        tx.getInputs().get(0).setSequenceNumber(1);
         //parent should have been uncached
         assertEquals(false, tx.isCached());
         //so should child
         assertEquals(false, tx.getInputs().get(0).isCached());
-        
+
         bos = new ByteArrayOutputStream();
         bs.serialize(tx, bos);
         assertEquals(true, !Arrays.equals(txMessage, bos.toByteArray()));
-        
+
       //deserialize/reserialize to check for equals.
-        bais = new ByteArrayInputStream(txMessage);
-    	tx = (Transaction)bs.deserialize(bais);
-    	assertNotNull(tx);
+        tx = (Transaction)bs.deserialize(ByteBuffer.wrap(txMessage));
+        assertNotNull(tx);
         assertEquals(!lazy, tx.isParsed());
         assertEquals(true, tx.isCached());
         bos = new ByteArrayOutputStream();
         bs.serialize(tx, bos);
         assertEquals(true, Arrays.equals(txMessage, bos.toByteArray()));
-        
+
       //deserialize/reserialize to check for equals.  Set a field to it's existing value to trigger uncache
-        bais = new ByteArrayInputStream(txMessage);
-    	tx = (Transaction)bs.deserialize(bais);
-    	assertNotNull(tx);
+        tx = (Transaction)bs.deserialize(ByteBuffer.wrap(txMessage));
+        assertNotNull(tx);
         assertEquals(!lazy, tx.isParsed());
         assertEquals(true, tx.isCached());
-       
-        tx.getInputs().get(0).setSequence(tx.getInputs().get(0).getSequence());
-        
+
+        tx.getInputs().get(0).setSequenceNumber(tx.getInputs().get(0).getSequenceNumber());
+
         bos = new ByteArrayOutputStream();
         bs.serialize(tx, bos);
         assertEquals(true, Arrays.equals(txMessage, bos.toByteArray()));
-        
+
     }
 
 
@@ -191,14 +154,12 @@ public class BitcoinSerializerTest {
      */
     @Test
     public void testHeaders1() throws Exception {
-        BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), true);
+        BitcoinSerializer bs = new BitcoinSerializer(MainNetParams.get());
 
-        ByteArrayInputStream bais = new ByteArrayInputStream(Hex.decode("f9beb4d9686561" +
+        HeadersMessage hm = (HeadersMessage) bs.deserialize(ByteBuffer.wrap(Hex.decode("f9beb4d9686561" +
                 "646572730000000000520000005d4fab8101010000006fe28c0ab6f1b372c1a6a246ae6" +
                 "3f74f931e8365e15a089c68d6190000000000982051fd1e4ba744bbbe680e1fee14677b" +
-                "a1a3c3540bf7b1cdb606e857233e0e61bc6649ffff001d01e3629900"));
-
-        HeadersMessage hm = (HeadersMessage) bs.deserialize(bais);
+                "a1a3c3540bf7b1cdb606e857233e0e61bc6649ffff001d01e3629900")));
 
         // The first block after the genesis
         // http://blockexplorer.com/b/1
@@ -206,7 +167,7 @@ public class BitcoinSerializerTest {
         String hash = block.getHashAsString();
         assertEquals(hash, "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048");
 
-        assertEquals(block.transactions.size(), 0);
+        assertNull(block.transactions);
 
         assertEquals(Utils.bytesToHexString(block.getMerkleRoot().getBytes()),
                 "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098");
@@ -218,9 +179,9 @@ public class BitcoinSerializerTest {
      * Get 6 headers of blocks 1-6 in the chain
      */
     public void testHeaders2() throws Exception {
-        BitcoinSerializer bs = new BitcoinSerializer(NetworkParameters.prodNet(), true);
+        BitcoinSerializer bs = new BitcoinSerializer(MainNetParams.get());
 
-        ByteArrayInputStream bais = new ByteArrayInputStream(Hex.decode("f9beb4d96865616465" +
+        HeadersMessage hm = (HeadersMessage) bs.deserialize(ByteBuffer.wrap(Hex.decode("f9beb4d96865616465" +
                 "72730000000000e701000085acd4ea06010000006fe28c0ab6f1b372c1a6a246ae63f74f931e" +
                 "8365e15a089c68d6190000000000982051fd1e4ba744bbbe680e1fee14677ba1a3c3540bf7b1c" +
                 "db606e857233e0e61bc6649ffff001d01e3629900010000004860eb18bf1b1620e37e9490fc8a" +
@@ -233,9 +194,7 @@ public class BitcoinSerializerTest {
                 "a88d221c8bd6c059da090e88f8a2c99690ee55dbba4e00000000e11c48fecdd9e72510ca84f023" +
                 "370c9a38bf91ac5cae88019bee94d24528526344c36649ffff001d1d03e4770001000000fc33f5" +
                 "96f822a0a1951ffdbf2a897b095636ad871707bf5d3162729b00000000379dfb96a5ea8c81700ea4" +
-                "ac6b97ae9a9312b2d4301a29580e924ee6761a2520adc46649ffff001d189c4c9700"));
-
-        HeadersMessage hm = (HeadersMessage) bs.deserialize(bais);
+                "ac6b97ae9a9312b2d4301a29580e924ee6761a2520adc46649ffff001d189c4c9700")));
 
         int nBlocks = hm.getBlockHeaders().size();
         assertEquals(nBlocks, 6);
@@ -260,5 +219,63 @@ public class BitcoinSerializerTest {
         assertEquals(thirdBlock.getNonce(), 2850094635L);
     }
 
+    @Test
+    public void testBitcoinPacketHeader() {
+        try {
+            new BitcoinSerializer.BitcoinPacketHeader(ByteBuffer.wrap(new byte[]{0}));
+            fail();
+        } catch (BufferUnderflowException e) {
+        }
+
+        // Message with a Message size which is 1 too big, in little endian format.
+        byte[] wrongMessageLength = Hex.decode("000000000000000000000000010000020000000000");
+        try {
+            new BitcoinSerializer.BitcoinPacketHeader(ByteBuffer.wrap(wrongMessageLength));
+            fail();
+        } catch (ProtocolException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void testSeekPastMagicBytes() {
+        // Fail in another way, there is data in the stream but no magic bytes.
+        byte[] brokenMessage = Hex.decode("000000");
+        try {
+            new BitcoinSerializer(MainNetParams.get()).seekPastMagicBytes(ByteBuffer.wrap(brokenMessage));
+            fail();
+        } catch (BufferUnderflowException e) {
+            // expected
+        }
+    }
+
+    @Test
+    /**
+     * Tests serialization of an unknown message.
+     */
+    public void testSerializeUnknownMessage() {
+        BitcoinSerializer bs = new BitcoinSerializer(MainNetParams.get());
+
+        UnknownMessage a = new UnknownMessage();
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(addrMessage.length);
+        try {
+            bs.serialize(a, bos);
+            fail();
+        } catch (Throwable e) {
+        }
+    }
+
+    /**
+     * Unknown message for testSerializeUnknownMessage.
+     */
+    class UnknownMessage extends Message {
+        @Override
+        void parse() throws ProtocolException {
+        }
+
+        @Override
+        protected void parseLite() throws ProtocolException {
+        }
+    }
 
 }

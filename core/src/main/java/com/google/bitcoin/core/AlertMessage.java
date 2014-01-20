@@ -58,6 +58,11 @@ public class AlertMessage extends Message {
     }
 
     @Override
+    public String toString() {
+        return "ALERT: " + getStatusBar();
+    }
+
+    @Override
     void parse() throws ProtocolException {
         // Alerts are formatted in two levels. The top level contains two byte arrays: a signature, and a serialized
         // data structure containing the actual alert data.
@@ -109,7 +114,7 @@ public class AlertMessage extends Message {
      * doesn't verify, because that would allow arbitrary attackers to spam your users.
      */
     public boolean isSignatureValid() {
-        return ECKey.verify(Utils.doubleDigest(content), signature, params.alertSigningKey);
+        return ECKey.verify(Utils.doubleDigest(content), signature, params.getAlertSigningKey());
     }
 
     @Override

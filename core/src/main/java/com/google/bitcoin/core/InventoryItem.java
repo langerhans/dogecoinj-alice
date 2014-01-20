@@ -18,15 +18,16 @@ package com.google.bitcoin.core;
 
 public class InventoryItem {
     
-	/**
-	 * 4 byte uint32 type field + 32 byte hash
-	 */
-	static final int MESSAGE_LENGTH = 36;
-	
-	public enum Type {
+    /**
+     * 4 byte uint32 type field + 32 byte hash
+     */
+    static final int MESSAGE_LENGTH = 36;
+    
+    public enum Type {
         Error,
         Transaction,
-        Block
+        Block,
+        FilteredBlock
     }
 
     public final Type type;
@@ -40,5 +41,15 @@ public class InventoryItem {
 
     public String toString() {
         return type.toString() + ": " + hash;
+    }
+
+    public int hashCode() {
+        return hash.hashCode() + type.ordinal();
+    }
+
+    public boolean equals(Object o) {
+        return o instanceof InventoryItem &&
+                ((InventoryItem)o).type == this.type &&
+                ((InventoryItem)o).hash.equals(this.hash);
     }
 }

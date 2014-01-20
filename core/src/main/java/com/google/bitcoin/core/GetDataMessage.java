@@ -16,6 +16,10 @@
 
 package com.google.bitcoin.core;
 
+/**
+ * Represents the "getdata" P2P network message, which requests the contents of blocks or transactions given their
+ * hashes.
+ */
 public class GetDataMessage extends ListMessage {
     private static final long serialVersionUID = 2754681589501709887L;
 
@@ -42,5 +46,13 @@ public class GetDataMessage extends ListMessage {
 
     public GetDataMessage(NetworkParameters params) {
         super(params);
+    }
+
+    public void addTransaction(Sha256Hash hash) {
+        addItem(new InventoryItem(InventoryItem.Type.Transaction, hash));
+    }
+
+    public void addBlock(Sha256Hash hash) {
+        addItem(new InventoryItem(InventoryItem.Type.Block, hash));
     }
 }

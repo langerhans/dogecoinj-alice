@@ -16,99 +16,80 @@
 
 package com.google.bitcoin.core;
 
+import com.google.bitcoin.params.*;
+import com.google.bitcoin.script.Script;
+import com.google.bitcoin.script.ScriptOpCodes;
+import com.google.common.base.Objects;
 import org.spongycastle.util.encoders.Hex;
 
+import javax.annotation.Nullable;
 import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
 import java.math.BigInteger;
+import java.util.HashMap;
+import java.util.Map;
 
-import static com.google.common.base.Preconditions.checkState;
-
-// TODO: Refactor this after we stop supporting serialization compatibility to use subclasses and singletons.
+import static com.google.bitcoin.core.Utils.COIN;
 
 /**
- * NetworkParameters contains the data needed for working with an instantiation of a Bitcoin chain.<p>
+ * <p>NetworkParameters contains the data needed for working with an instantiation of a Bitcoin chain.</p>
  *
- * Currently there are only two, the production chain and the test chain. But in future as Bitcoin
- * evolves there may be more. You can create your own as long as they don't conflict.
+ * <p>This is an abstract class, concrete instantiations can be found in the params package. There are four:
+ * one for the main network ({@link MainNetParams}), one for the public test network, and two others that are
+ * intended for unit testing and local app development purposes. Although this class contains some aliases for
+ * them, you are encouraged to call the static get() methods on each specific params class directly.</p>
  */
-public class NetworkParameters implements Serializable {
-    private static final long serialVersionUID = 3L;
-
+public abstract class NetworkParameters implements Serializable {
     /**
-     * The protocol version this library implements. A value of 31800 means 0.3.18.00.
+     * The protocol version this library implements.
      */
-    public static final int PROTOCOL_VERSION = 31800;
+    public static final int PROTOCOL_VERSION = 70001;
 
     /**
      * The alert signing key originally owned by Satoshi, and now passed on to Gavin along with a few others.
      */
     public static final byte[] SATOSHI_KEY = Hex.decode("04fc9702847840aaf195de8442ebecedf5b095cdbb9bc716bda9110971b28a49e0ead8564ff0db22209e0374782c093bb899692d524e9d6a6956e7c5ecbcd68284");
 
-    /**
-     * The string returned by getId() for the main, production network where people trade things.
-     */
-    public static final String ID_PRODNET = "org.bitcoin.production";
-    /**
-     * The string returned by getId() for the testnet.
-     */
+    /** The string returned by getId() for the main, production network where people trade things. */
+    public static final String ID_MAINNET = "org.bitcoin.production";
+    /** The string returned by getId() for the testnet. */
     public static final String ID_TESTNET = "org.bitcoin.test";
+    /** Unit test network. */
+    public static final String ID_UNITTESTNET = "com.google.bitcoin.unittest";
 
+    // TODO: Seed nodes should be here as well.
 
-    // TODO: Seed nodes and checkpoint values should be here as well.
-
-    /**
-     * Genesis block for this chain.<p>
-     *
-     * The first block in every chain is a well known constant shared between all BitCoin implemenetations. For a
-     * block to be valid, it must be eventually possible to work backwards to the genesis block by following the
-     * prevBlockHash pointers in the block headers.<p>
-     *
-     * The genesis blocks for both test and prod networks contain the timestamp of when they were created,
-     * and a message in the coinbase transaction. It says, <i>"The Times 03/Jan/2009 Chancellor on brink of second
-     * bailout for banks"</i>.
-     */
-    public Block genesisBlock;
-    /** What the easiest allowable proof of work should be. */
-    public BigInteger proofOfWorkLimit;
-    /** Default TCP port on which to connect to nodes. */
-    public int port;
-    /** The header bytes that identify the start of a packet on this network. */
-    public long packetMagic;
-    /**
-     * First byte of a base58 encoded address. See {@link Address}. This is the same as acceptableAddressCodes[0] and
-     * is the one used for "normal" addresses. Other types of address may be encountered with version codes found in
-     * the acceptableAddressCodes array.
-     */
-    public int addressHeader;
-    /** First byte of a base58 encoded dumped private key. See {@link DumpedPrivateKey}. */
-    public int dumpedPrivateKeyHeader;
-    /** How many blocks pass between difficulty adjustment periods. BitCoin standardises this to be 2015. */
-    public int interval;
-    /**
-     * How much time in seconds is supposed to pass between "interval" blocks. If the actual elapsed time is
-     * significantly different from this value, the network difficulty formula will produce a different value. Both
-     * test and production Bitcoin networks use 2 weeks (1209600 seconds).
-     */
-    public int targetTimespan;
-    /**
-     * The key used to sign {@link AlertMessage}s. You can use {@link ECKey#verify(byte[], byte[], byte[])} to verify
-     * signatures using it.
-     */
-    public byte[] alertSigningKey;
+    protected Block genesisBlock;
+    protected BigInteger proofOfWorkLimit;
+    protected int port;
+    protected long packetMagic;
+    protected int addressHeader;
+    protected int p2shHeader;
+    protected int dumpedPrivateKeyHeader;
+    protected int interval;
+    protected int targetTimespan;
+    protected byte[] alertSigningKey;
 
     /**
      * See getId(). This may be null for old deserialized wallets. In that case we derive it heuristically
      * by looking at the port number.
      */
-    private String id;
+    protected String id;
 
     /**
-     * The version codes that prefix addresses which are acceptable on this network. Although Satoshi intended these to
-     * be used for "versioning", in fact they are today used to discriminate what kind of data is contained in the
-     * address and to prevent accidentally sending coins across chains which would destroy them.
+     * The depth of blocks required for a coinbase transaction to be spendable.
      */
-    public int[] acceptableAddressCodes;
+    protected int spendableCoinbaseDepth;
+    protected int subsidyDecreaseBlockCount;
+    
+    protected int[] acceptableAddressCodes;
+    protected String[] dnsSeeds;
+    protected Map<Integer, Sha256Hash> checkpoints = new HashMap<Integer, Sha256Hash>();
+
+    protected NetworkParameters() {
+        alertSigningKey = SATOSHI_KEY;
+        genesisBlock = createGenesis(this);
+    }
 
     private static Block createGenesis(NetworkParameters n) {
         Block genesisBlock = new Block(n);
@@ -123,8 +104,8 @@ public class NetworkParameters implements Serializable {
             ByteArrayOutputStream scriptPubKeyBytes = new ByteArrayOutputStream();
             Script.writeBytes(scriptPubKeyBytes, Hex.decode
                     ("04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f"));
-            scriptPubKeyBytes.write(Script.OP_CHECKSIG);
-            t.addOutput(new TransactionOutput(n, t, scriptPubKeyBytes.toByteArray()));
+            scriptPubKeyBytes.write(ScriptOpCodes.OP_CHECKSIG);
+            t.addOutput(new TransactionOutput(n, t, Utils.toNanoCoins(50, 0), scriptPubKeyBytes.toByteArray()));
         } catch (Exception e) {
             // Cannot happen.
             throw new RuntimeException(e);
@@ -136,101 +117,203 @@ public class NetworkParameters implements Serializable {
     public static final int TARGET_TIMESPAN = 14 * 24 * 60 * 60;  // 2 weeks per difficulty cycle, on average.
     public static final int TARGET_SPACING = 10 * 60;  // 10 minutes per block.
     public static final int INTERVAL = TARGET_TIMESPAN / TARGET_SPACING;
+    
+    /**
+     * Blocks with a timestamp after this should enforce BIP 16, aka "Pay to script hash". This BIP changed the
+     * network rules in a soft-forking manner, that is, blocks that don't follow the rules are accepted but not
+     * mined upon and thus will be quickly re-orged out as long as the majority are enforcing the rule.
+     */
+    public static final int BIP16_ENFORCE_TIME = 1333238400;
+    
+    /**
+     * The maximum money to be generated
+     */
+    public static final BigInteger MAX_MONEY = new BigInteger("21000000", 10).multiply(COIN);
 
-    /** Sets up the given NetworkParameters with testnet values. */
-    private static NetworkParameters createTestNet(NetworkParameters n) {
-        // Genesis hash is 0000000224b1593e3ff16a0e3b61285bbc393a39f78c8aa48c456142671f7110
-        n.proofOfWorkLimit = Utils.decodeCompactBits(0x1d0fffffL);
-        n.packetMagic = 0xfabfb5daL;
-        n.port = 18333;
-        n.addressHeader = 111;
-        n.acceptableAddressCodes = new int[] { 111 };
-        n.dumpedPrivateKeyHeader = 239;
-        n.interval = INTERVAL;
-        n.targetTimespan = TARGET_TIMESPAN;
-        n.alertSigningKey = SATOSHI_KEY;
-        n.genesisBlock = createGenesis(n);
-        n.genesisBlock.setTime(1296688602L);
-        n.genesisBlock.setDifficultyTarget(0x1d07fff8L);
-        n.genesisBlock.setNonce(384568319);
-        n.id = ID_TESTNET;
-        String genesisHash = n.genesisBlock.getHashAsString();
-        checkState(genesisHash.equals("00000007199508e34a9ff81e6ec0c477a4cccff2a4767a8eee39c11db367b008"),
-                genesisHash);
-        return n;
-    }
-
-    /** The test chain created by Gavin. */
+    /** Alias for TestNet3Params.get(), use that instead. */
+    @Deprecated
     public static NetworkParameters testNet() {
-        NetworkParameters n = new NetworkParameters();
-        return createTestNet(n);
+        return TestNet3Params.get();
     }
 
-    /** The primary BitCoin chain created by Satoshi. */
+    /** Alias for TestNet2Params.get(), use that instead. */
+    @Deprecated
+    public static NetworkParameters testNet2() {
+        return TestNet2Params.get();
+    }
+
+    /** Alias for TestNet3Params.get(), use that instead. */
+    @Deprecated
+    public static NetworkParameters testNet3() {
+        return TestNet3Params.get();
+    }
+
+    /** Alias for MainNetParams.get(), use that instead */
+    @Deprecated
     public static NetworkParameters prodNet() {
-        NetworkParameters n = new NetworkParameters();
-        n.proofOfWorkLimit = Utils.decodeCompactBits(0x1d00ffffL);
-        n.port = 8333;
-        n.packetMagic = 0xf9beb4d9L;
-        n.addressHeader = 0;
-        n.acceptableAddressCodes = new int[] { 0 };
-        n.dumpedPrivateKeyHeader = 128;
-        n.interval = INTERVAL;
-        n.targetTimespan = TARGET_TIMESPAN;
-        n.alertSigningKey = SATOSHI_KEY;
-        n.genesisBlock = createGenesis(n);
-        n.genesisBlock.setDifficultyTarget(0x1d00ffffL);
-        n.genesisBlock.setTime(1231006505L);
-        n.genesisBlock.setNonce(2083236893);
-        n.id = ID_PRODNET;
-        String genesisHash = n.genesisBlock.getHashAsString();
-        checkState(genesisHash.equals("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"),
-                genesisHash);
-        return n;
+        return MainNetParams.get();
     }
 
     /** Returns a testnet params modified to allow any difficulty target. */
+    @Deprecated
     public static NetworkParameters unitTests() {
-        NetworkParameters n = new NetworkParameters();
-        n = createTestNet(n);
-        n.proofOfWorkLimit = new BigInteger("00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16);
-        n.genesisBlock.setNonce(2); // Make this pass the difficulty test 
-        n.genesisBlock.setDifficultyTarget(Block.EASIEST_DIFFICULTY_TARGET);
-        n.interval = 10;
-        n.targetTimespan = 200000000;  // 6 years. Just a very big number.
-        n.id = "com.google.bitcoin.unittest";
-        return n;
+        return UnitTestParams.get();
+    }
+
+    /** Returns a standard regression test params (similar to unitTests) */
+    @Deprecated
+    public static NetworkParameters regTests() {
+        return RegTestParams.get();
     }
 
     /**
-     * A java package style string acting as unique ID for these parameters
+     * A Java package style string acting as unique ID for these parameters
      */
     public String getId() {
-        if (id == null) {
-            // Migrate from old serialized wallets which lack the ID field. This code can eventually be deleted.
-            if (port == 8333) {
-                id = ID_PRODNET;
-            } else if (port == 18333) {
-                id = ID_TESTNET;
-            }
-        }
         return id;
     }
 
+    @Override
     public boolean equals(Object other) {
         if (!(other instanceof NetworkParameters)) return false;
         NetworkParameters o = (NetworkParameters) other;
         return o.getId().equals(getId());
     }
 
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(getId());
+    }
+
     /** Returns the network parameters for the given string ID or NULL if not recognized. */
+    @Nullable
     public static NetworkParameters fromID(String id) {
-        if (id.equals(ID_PRODNET)) {
-            return prodNet();
+        if (id.equals(ID_MAINNET)) {
+            return MainNetParams.get();
         } else if (id.equals(ID_TESTNET)) {
-            return testNet();
+            return TestNet3Params.get();
+        } else if (id.equals(ID_UNITTESTNET)) {
+            return UnitTestParams.get();
         } else {
             return null;
         }
+    }
+
+    public int getSpendableCoinbaseDepth() {
+        return spendableCoinbaseDepth;
+    }
+
+    /**
+     * Returns true if the block height is either not a checkpoint, or is a checkpoint and the hash matches.
+     */
+    public boolean passesCheckpoint(int height, Sha256Hash hash) {
+        Sha256Hash checkpointHash = checkpoints.get(height);
+        return checkpointHash == null || checkpointHash.equals(hash);
+    }
+
+    /**
+     * Returns true if the given height has a recorded checkpoint.
+     */
+    public boolean isCheckpoint(int height) {
+        Sha256Hash checkpointHash = checkpoints.get(height);
+        return checkpointHash != null;
+    }
+
+    public int getSubsidyDecreaseBlockCount() {
+        return subsidyDecreaseBlockCount;
+    }
+
+    /** Returns DNS names that when resolved, give IP addresses of active peers. */
+    public String[] getDnsSeeds() {
+        return dnsSeeds;
+    }
+
+    /**
+     * <p>Genesis block for this chain.</p>
+     *
+     * <p>The first block in every chain is a well known constant shared between all Bitcoin implemenetations. For a
+     * block to be valid, it must be eventually possible to work backwards to the genesis block by following the
+     * prevBlockHash pointers in the block headers.</p>
+     *
+     * <p>The genesis blocks for both test and prod networks contain the timestamp of when they were created,
+     * and a message in the coinbase transaction. It says, <i>"The Times 03/Jan/2009 Chancellor on brink of second
+     * bailout for banks"</i>.</p>
+     */
+    public Block getGenesisBlock() {
+        return genesisBlock;
+    }
+
+    /** Default TCP port on which to connect to nodes. */
+    public int getPort() {
+        return port;
+    }
+
+    /** The header bytes that identify the start of a packet on this network. */
+    public long getPacketMagic() {
+        return packetMagic;
+    }
+
+    /**
+     * First byte of a base58 encoded address. See {@link com.google.bitcoin.core.Address}. This is the same as acceptableAddressCodes[0] and
+     * is the one used for "normal" addresses. Other types of address may be encountered with version codes found in
+     * the acceptableAddressCodes array.
+     */
+    public int getAddressHeader() {
+        return addressHeader;
+    }
+
+    /**
+     * First byte of a base58 encoded P2SH address.  P2SH addresses are defined as part of BIP0013.
+     */
+    public int getP2SHHeader() {
+        return p2shHeader;
+    }
+
+    /** First byte of a base58 encoded dumped private key. See {@link com.google.bitcoin.core.DumpedPrivateKey}. */
+    public int getDumpedPrivateKeyHeader() {
+        return dumpedPrivateKeyHeader;
+    }
+
+    /**
+     * How much time in seconds is supposed to pass between "interval" blocks. If the actual elapsed time is
+     * significantly different from this value, the network difficulty formula will produce a different value. Both
+     * test and production Bitcoin networks use 2 weeks (1209600 seconds).
+     */
+    public int getTargetTimespan() {
+        return targetTimespan;
+    }
+
+    /**
+     * The version codes that prefix addresses which are acceptable on this network. Although Satoshi intended these to
+     * be used for "versioning", in fact they are today used to discriminate what kind of data is contained in the
+     * address and to prevent accidentally sending coins across chains which would destroy them.
+     */
+    public int[] getAcceptableAddressCodes() {
+        return acceptableAddressCodes;
+    }
+
+    /**
+     * If we are running in testnet-in-a-box mode, we allow connections to nodes with 0 non-genesis blocks.
+     */
+    public boolean allowEmptyPeerChain() {
+        return true;
+    }
+
+    /** How many blocks pass between difficulty adjustment periods. Bitcoin standardises this to be 2015. */
+    public int getInterval() {
+        return interval;
+    }
+
+    /** What the easiest allowable proof of work should be. */
+    public BigInteger getProofOfWorkLimit() {
+        return proofOfWorkLimit;
+    }
+
+    /**
+     * The key used to sign {@link com.google.bitcoin.core.AlertMessage}s. You can use {@link com.google.bitcoin.core.ECKey#verify(byte[], byte[], byte[])} to verify
+     * signatures using it.
+     */
+    public byte[] getAlertSigningKey() {
+        return alertSigningKey;
     }
 }
