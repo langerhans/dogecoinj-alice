@@ -30,6 +30,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
+
 /**
  * Test that an example production coinbase transactions can be added to a wallet ok.
  */
