@@ -52,11 +52,11 @@ message EncryptedPrivateKey {
  * transactions, and not for spending.
  */
 message Key {
-  enum Type {
-    ORIGINAL = 1;              // Unencrypted - Original bitcoin secp256k1 curve
-    ENCRYPTED_SCRYPT_AES = 2;  // Encrypted with Scrypt and AES - - Original bitcoin secp256k1 curve
-  }
-  required Type type = 1;
+    enum Type {
+        ORIGINAL = 1;              // Unencrypted - Original dogecoin secp256k1 curve
+        ENCRYPTED_SCRYPT_AES = 2;  // Encrypted with Scrypt and AES - - Original dogecoin secp256k1 curve
+    }
+    required Type type = 1;
 
   // The private EC key bytes without any ASN.1 wrapping.
   optional bytes private_key = 2;
@@ -239,7 +239,7 @@ message Extension {
   required bool mandatory = 3;
 }
 
-/** A bitcoin wallet */
+/** A dogecoin wallet */
 message Wallet {
   /**
    * The encryption type of the wallet.
@@ -253,9 +253,9 @@ message Wallet {
     ENCRYPTED_SCRYPT_AES = 2;        // All keys are encrypted with a passphrase based KDF of scrypt and AES encryption
   }
 
-  required string network_identifier = 1; // the network used by this wallet
-  // org.bitcoin.production = production network (Satoshi genesis block)
-  // org.bitcoin.test = test network (Andresen genesis block)
+    required string network_identifier = 1; // the network used by this wallet
+    // org.dogecoin.production = production network (Satoshi genesis block)
+    // org.dogecoin.test = test network (Andresen genesis block)
 
   // The SHA256 hash of the head of the best chain seen by this wallet.
   optional bytes last_seen_block_hash = 2;

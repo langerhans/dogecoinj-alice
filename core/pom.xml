@@ -21,14 +21,14 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>com.google</groupId>
-        <artifactId>bitcoinj-parent</artifactId>
+        <artifactId>dogecoinj-parent</artifactId>
         <version>0.11-SNAPSHOT-MB-ALICE</version>
     </parent>
 
-    <artifactId>bitcoinj</artifactId>
+    <artifactId>dogecoinj</artifactId>
 
-    <name>bitcoinj</name>
-    <description>A Java Bitcoin library</description>
+    <name>dogecoinj</name>
+    <description>A Java Dogecoin library</description>
 
     <profiles>
         <profile>
@@ -175,7 +175,7 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
         </dependency>
-        <!-- bitcoinj consumers are expected to provide their own SLF4J adapters
+        <!-- dogecoinj consumers are expected to provide their own SLF4J adapters
              such as logback, slf4j-log4j12, slf4j-jcl and so on
              see http://www.slf4j.org/faq.html -->
         <dependency>
