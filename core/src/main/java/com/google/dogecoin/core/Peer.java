@@ -136,12 +136,10 @@ public class Peer {
     private boolean isAcked;
     private final PeerHandler handler;
 
-    // A minimum needed block height to allow the implementation to connect to a peer.
-    // This is needed as many nodes run an old version and supply users with a wrong
-    // fork. As dogecoin didn't change the version message to distinguish client versions,
-    // we must resort to this "hack". We set it to 50k although the fork happened around 42k.
-    // This way we are sure not to kill nodes which are currently catching up themselves.
-    private final long MIN_PEER_BLOCK_HEIGHT = 50000;
+	// A minimum needed block height to allow the implementation to connect to a peer.
+    // This prevents us from running onto the wrong side of the Feb '14 fork.
+    // It happened around block 104700 or so. Give it a bit more room.
+    private final long MIN_PEER_BLOCK_HEIGHT = 105000;
 
     /**
      * Construct a peer that reads/writes from the given block chain.
