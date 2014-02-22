@@ -58,11 +58,9 @@ public class MainNetParams extends NetworkParameters {
         //TODO Get actual Dogecoin checkpoints
 
         dnsSeeds = new String[] {
-                /*"seed.bitcoin.sipa.be",        // Pieter Wuille
-                "dnsseed.bluematt.me",         // Matt Corallo
-                "dnsseed.bitcoin.dashjr.org",  // Luke Dashjr*/
                 "seed.dogecoin.com",
-                //TODO Add more...
+                "seed.mophides.com",
+                "seed.dglibrary.org",
         };
     }
 
