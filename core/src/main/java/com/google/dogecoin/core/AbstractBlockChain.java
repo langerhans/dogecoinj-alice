@@ -780,9 +780,18 @@ public abstract class AbstractBlockChain {
     private void checkDifficultyTransitions(StoredBlock storedPrev, Block nextBlock) throws BlockStoreException, VerificationException {
         checkState(lock.isHeldByCurrentThread());
         Block prev = storedPrev.getHeader();
-        
+
+        boolean newDiffAlgo = storedPrev.getHeight() + 1 >= params.getDiffChangeTarget();
+        int retargetInterval = params.getInterval();
+        int retargetTimespan = params.getTargetTimespan();
+        if (newDiffAlgo)
+        {
+            retargetInterval = params.getNewInterval();
+            retargetTimespan = params.getNewTargetTimespan();
+        }
+
         // Is this supposed to be a difficulty transition point?
-        if ((storedPrev.getHeight() + 1) % params.getInterval() != 0) {
+        if ((storedPrev.getHeight() + 1) % retargetInterval != 0) {
 
             // TODO: Refactor this hack after 0.5 is released and we stop supporting deserialization compatibility.
             // This should be a method of the NetworkParameters, which should in turn be using singletons and a subclass
@@ -804,9 +813,9 @@ public abstract class AbstractBlockChain {
         // two weeks after the initial block chain download.
         long now = System.currentTimeMillis();
         StoredBlock cursor = blockStore.get(prev.getHash());
-        int goBack = params.getInterval() - 1;
-        if (cursor.getHeight()+1 != params.getInterval())
-            goBack = params.getInterval();
+        int goBack = retargetInterval - 1;
+        if (cursor.getHeight()+1 != retargetInterval)
+            goBack = retargetInterval;
 
         for (int i = 0; i < goBack; i++) {
             if (cursor == null) {
@@ -830,10 +839,16 @@ public abstract class AbstractBlockChain {
 
         Block blockIntervalAgo = cursor.getHeader();
         int timespan = (int) (prev.getTimeSeconds() - blockIntervalAgo.getTimeSeconds());
+        final int targetTimespan = retargetTimespan;
+
+        if (newDiffAlgo)
+        {
+            timespan = retargetTimespan + (timespan - retargetTimespan)/8;
+            if (timespan < (retargetTimespan - (retargetTimespan/4)) ) timespan = (retargetTimespan - (retargetTimespan/4));
+            if (timespan > (retargetTimespan + (retargetTimespan/2)) ) timespan = (retargetTimespan + (retargetTimespan/2));
+        }
         // Limit the adjustment step.
-        final int targetTimespan = params.getTargetTimespan();
-        // Limit the adjustment step.
-        if (storedPrev.getHeight()+1 > 10000)
+        else if (storedPrev.getHeight()+1 > 10000)
         {
             if (timespan < targetTimespan / 4)
                 timespan = targetTimespan / 4;

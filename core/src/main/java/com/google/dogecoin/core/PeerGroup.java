@@ -20,6 +20,7 @@ package com.google.dogecoin.core;
 import com.google.dogecoin.core.Peer.PeerHandler;
 import com.google.dogecoin.discovery.PeerDiscovery;
 import com.google.dogecoin.discovery.PeerDiscoveryException;
+import com.google.dogecoin.params.MainNetParams;
 import com.google.dogecoin.utils.ListenerRegistration;
 import com.google.dogecoin.utils.Threading;
 import com.google.common.base.Preconditions;
@@ -101,8 +102,7 @@ public class PeerGroup extends AbstractIdleService implements TransactionBroadca
     // until we reach this count.
     @GuardedBy("lock") private int maxConnections;
     // Minimum protocol version we will allow ourselves to connect to: require Bloom filtering.
-    // TODO: We have to stay at this currently, as 70001 adoption will be too low to rely on it.
-    private volatile int vMinRequiredProtocolVersion = 60003; //MainNetParams.PROTOCOL_VERSION;
+    private volatile int vMinRequiredProtocolVersion = MainNetParams.PROTOCOL_VERSION;
 
     // Runs a background thread that we use for scheduling pings to our peers, so we can measure their performance
     // and network latency. We ping peers every pingIntervalMsec milliseconds.

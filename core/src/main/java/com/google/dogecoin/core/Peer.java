@@ -339,13 +339,13 @@ public class Peer {
                         vPeerVersionMessage.clientVersion, version);
                 e.getChannel().close();
             }
-            if (vPeerVersionMessage.bestHeight < MIN_PEER_BLOCK_HEIGHT)
+            if (vPeerVersionMessage.bestHeight < MIN_PEER_BLOCK_HEIGHT && params.getId().equals(NetworkParameters.ID_MAINNET))
             {
                 log.warn("Connected to a peer with just {} blocks. Don't accept it.",
                         vPeerVersionMessage.bestHeight);
                 e.getChannel().close();
             }
-            if (!vPeerVersionMessage.subVer.contains(ACCEPTED_SUBVERSION))
+            if (!vPeerVersionMessage.subVer.contains(ACCEPTED_SUBVERSION) && params.getId().equals(NetworkParameters.ID_MAINNET))
             {
                 log.warn("Connected to a peer with subVer {}. Don't accept it.",
                         vPeerVersionMessage.subVer);
