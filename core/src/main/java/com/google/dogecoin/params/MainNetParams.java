@@ -61,6 +61,7 @@ public class MainNetParams extends NetworkParameters {
                 "seed.dogecoin.com",
                 "seed.mophides.com",
                 "seed.dglibrary.org",
+                "seed.dogechain.info",
         };
     }
 
