@@ -47,12 +47,28 @@ public class FilteredBlock extends Message {
 
     @Override
     void parse() throws ProtocolException {
+        long blockVersion = Utils.readUint32(bytes, cursor);
+
         byte[] headerBytes = new byte[Block.HEADER_SIZE];
         System.arraycopy(bytes, 0, headerBytes, 0, Block.HEADER_SIZE);
-        header = new Block(params, headerBytes);
-        
-        merkleTree = new PartialMerkleTree(params, bytes, Block.HEADER_SIZE);
-        
+
+
+        if (blockVersion == Block.BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+            AuxPoWMessage auxPoWMessage = new AuxPoWMessage(bytes, cursor + Block.HEADER_SIZE);
+            auxPoWMessage.parse();
+            this.cursor = auxPoWMessage.cursor;
+
+            header = new Block(params, headerBytes, new Block(params, auxPoWMessage.constructParentHeader()));
+
+            byte[] filteredBlock = new byte[Block.HEADER_SIZE + bytes.length - cursor];
+            System.arraycopy(headerBytes, 0, filteredBlock, 0, headerBytes.length-1);
+            System.arraycopy(bytes, cursor, filteredBlock, Block.HEADER_SIZE, bytes.length-cursor);
+            merkleTree = new PartialMerkleTree(params, filteredBlock, Block.HEADER_SIZE);
+        } else {
+            header = new Block(params, headerBytes);
+            merkleTree = new PartialMerkleTree(params, bytes, Block.HEADER_SIZE);
+        }
+
         length = Block.HEADER_SIZE + merkleTree.getMessageSize();
     }
     

@@ -73,6 +73,10 @@ public class Block extends Message {
     /** A value for difficultyTarget (nBits) that allows half of all possible hash solutions. Used in unit testing. */
     public static final long EASIEST_DIFFICULTY_TARGET = 0x207fFFFFL;
 
+    public static final int BLOCK_VERSION_DEFAULT = 0x00000002;
+    public static final int BLOCK_VERSION_AUXPOW = 0x00620002;
+    public static final int BLOCK_VERSION_AUXPOW_AUXBLOCK = 0x00620102;
+
     // Fields defined as part of the protocol format.
     private long version;
     private Sha256Hash prevBlockHash;
@@ -80,6 +84,9 @@ public class Block extends Message {
     private long time;
     private long difficultyTarget; // "nBits"
     private long nonce;
+
+    // The parent block header for AuxPoW blocks
+    private Block parentBlock;
 
     /** If null, it means this object holds only the headers. */
     List<Transaction> transactions;
@@ -116,6 +123,12 @@ public class Block extends Message {
         super(params, payloadBytes, 0, false, false, payloadBytes.length);
     }
 
+    /** Constructs a block object from the Bitcoin wire format. */
+    public Block(NetworkParameters params, byte[] payloadBytes, Block parentBlock) throws ProtocolException {
+        super(params, payloadBytes, 0, false, false, payloadBytes.length);
+        this.parentBlock = parentBlock;
+    }
+
     /**
      * Contruct a block object from the Bitcoin wire format.
      * @param params NetworkParameters object.
@@ -132,6 +145,11 @@ public class Block extends Message {
         super(params, payloadBytes, 0, parseLazy, parseRetain, length);
     }
 
+    public Block(NetworkParameters params, byte[] payloadBytes, boolean parseLazy, boolean parseRetain, int length, Block parentBlock)
+            throws ProtocolException {
+        super(params, payloadBytes, 0, parseLazy, parseRetain, length);
+        this.parentBlock = parentBlock;
+    }
 
     /**
      * Construct a block initialized with all the given fields.
@@ -196,11 +214,21 @@ public class Block extends Message {
         headerBytesValid = parseRetain;
     }
 
+    private void parseAuxData() throws ProtocolException {
+        AuxPoWMessage auxPoWMessage = new AuxPoWMessage(bytes, cursor);
+        auxPoWMessage.parse();
+        this.cursor = auxPoWMessage.cursor;
+        this.parentBlock = new Block(params, auxPoWMessage.constructParentHeader());
+    }
+
     private void parseTransactions() throws ProtocolException {
         if (transactionsParsed)
             return;
 
-        cursor = offset + HEADER_SIZE;
+        if (version != BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+            cursor = offset + HEADER_SIZE;
+        }
+
         optimalEncodingMessageSize = HEADER_SIZE;
         if (bytes.length == cursor) {
             // This message is just a header, it has no transactions.
@@ -228,6 +256,9 @@ public class Block extends Message {
 
     void parse() throws ProtocolException {
         parseHeader();
+        if (version == BLOCK_VERSION_AUXPOW_AUXBLOCK && bytes.length >= 160) { // We have at least 2 headers in an Aux block. Workaround for StoredBlocks
+            parseAuxData();
+        }
         parseTransactions();
         length = cursor - offset;
     }
@@ -580,6 +611,9 @@ public class Block extends Message {
         block.difficultyTarget = difficultyTarget;
         block.transactions = null;
         block.hash = getHash().duplicate();
+        if (version == BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+            block.parentBlock = parentBlock;
+        }
         return block;
     }
 
@@ -665,7 +699,13 @@ public class Block extends Message {
         // field is of the right value. This requires us to have the preceeding blocks.
         BigInteger target = getDifficultyTargetAsInteger();
 
-        BigInteger h = getScryptHash().toBigInteger();
+        BigInteger h;
+        if (this.version == BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+            h = this.parentBlock.getScryptHash().toBigInteger();
+        } else {
+            h  = getScryptHash().toBigInteger();
+        }
+
         if (h.compareTo(target) > 0) {
             // Proof of work check failed!
             if (throwException)

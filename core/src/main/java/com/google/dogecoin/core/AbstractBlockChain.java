@@ -773,6 +773,7 @@ public abstract class AbstractBlockChain {
 
     // February 16th 2012
     private static Date testnetDiffDate = new Date(1329264000000L);
+    private static final int testNetRetargetFix = 157500;
 
     /**
      * Throws an exception if the blocks difficulty is not correct.
@@ -788,6 +789,13 @@ public abstract class AbstractBlockChain {
         {
             retargetInterval = params.getNewInterval();
             retargetTimespan = params.getNewTargetTimespan();
+        }
+
+        if (params.getId().equals(NetworkParameters.ID_TESTNET)
+                && storedPrev.getHeight() >= testNetRetargetFix
+                && nextBlock.getTimeSeconds() > storedPrev.getHeader().getTimeSeconds() + retargetTimespan * 2 ) {
+            checkTestnetDifficulty(storedPrev, prev, nextBlock);
+            return;
         }
 
         // Is this supposed to be a difficulty transition point?
