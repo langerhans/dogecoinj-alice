@@ -35,7 +35,8 @@ public class MainNetParams extends NetworkParameters {
         proofOfWorkLimit = Utils.decodeCompactBits(0x1e0fffffL);
         dumpedPrivateKeyHeader = 158; //This is always addressHeader + 128
         addressHeader = 30;
-        acceptableAddressCodes = new int[] { addressHeader };
+        p2shHeader = 22;
+        acceptableAddressCodes = new int[] { addressHeader, p2shHeader };
         port = 22556;
         packetMagic = 0xc0c0c0c0;
         genesisBlock.setDifficultyTarget(0x1e0ffff0L);

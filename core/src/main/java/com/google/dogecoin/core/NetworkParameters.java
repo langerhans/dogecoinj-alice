@@ -66,6 +66,7 @@ public abstract class NetworkParameters implements Serializable {
     protected int port;
     protected long packetMagic;
     protected int addressHeader;
+    protected int p2shHeader;
     protected int dumpedPrivateKeyHeader;
     protected int interval;
     protected int newInterval;
