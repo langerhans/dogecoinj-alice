@@ -263,6 +263,13 @@ public abstract class NetworkParameters implements Serializable {
         return addressHeader;
     }
 
+    /**
+     * First byte of a base58 encoded P2SH address.  P2SH addresses are defined as part of BIP0013.
+     */
+    public int getP2SHHeader() {
+        return p2shHeader;
+    }
+
     /** First byte of a base58 encoded dumped private key. See {@link com.google.dogecoin.core.DumpedPrivateKey}. */
     public int getDumpedPrivateKeyHeader() {
         return dumpedPrivateKeyHeader;

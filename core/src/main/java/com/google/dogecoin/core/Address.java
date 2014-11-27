@@ -18,8 +18,11 @@ package com.google.dogecoin.core;
 
 import com.google.dogecoin.params.MainNetParams;
 import com.google.dogecoin.params.TestNet3Params;
+import com.google.dogecoin.script.Script;
 
 import javax.annotation.Nullable;
+
+import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * <p>A Bitcoin address looks like 1MsScoe2fTJoq4ZPdQgqyhgWeoNamYPevy and is derived from an elliptic curve public key
@@ -37,6 +40,18 @@ public class Address extends VersionedChecksummedBytes {
      * An address is a RIPEMD160 hash of a public key, therefore is always 160 bits or 20 bytes.
      */
     public static final int LENGTH = 20;
+    /**
+     * Construct an address from parameters, the address version, and the hash160 form. Example:<p>
+     *
+     * <pre>new Address(NetworkParameters.prodNet(), NetworkParameters.getAddressHeader(), Hex.decode("4a22c3c4cbb31e4d03b15550636762bda0baf85a"));</pre>
+     */
+    public Address(NetworkParameters params, int version, byte[] hash160) {
+        super(version, hash160);
+        if (!isAcceptableVersion(params, version))
+            throw new RuntimeException("Unrecognized Address version");
+        if (hash160.length != 20)  // 160 = 8 * 20
+            throw new RuntimeException("Addresses are 160-bit hashes, so you must provide 20 bytes");
+    }
 
     /**
      * Construct an address from parameters and the hash160 form. Example:<p>
@@ -44,9 +59,7 @@ public class Address extends VersionedChecksummedBytes {
      * <pre>new Address(NetworkParameters.prodNet(), Hex.decode("4a22c3c4cbb31e4d03b15550636762bda0baf85a"));</pre>
      */
     public Address(NetworkParameters params, byte[] hash160) {
-        super(params.getAddressHeader(), hash160);
-        if (hash160.length != 20)  // 160 = 8 * 20
-            throw new RuntimeException("Addresses are 160-bit hashes, so you must provide 20 bytes");
+        this(params, params.getAddressHeader(), hash160);
     }
 
     /**
@@ -62,14 +75,7 @@ public class Address extends VersionedChecksummedBytes {
     public Address(@Nullable NetworkParameters params, String address) throws AddressFormatException, WrongNetworkException {
         super(address);
         if (params != null) {
-            boolean found = false;
-            for (int v : params.getAcceptableAddressCodes()) {
-                if (version == v) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
+            if (!isAcceptableVersion(params, version)) {
                 throw new WrongNetworkException(version, params.getAcceptableAddressCodes());
             }
         }
@@ -78,6 +84,25 @@ public class Address extends VersionedChecksummedBytes {
     /** The (big endian) 20 byte hash that is the core of a Bitcoin address. */
     public byte[] getHash160() {
         return bytes;
+    }
+
+    /**
+     * Returns true if this address is a Pay-To-Script-Hash (P2SH) address.
+     * See also https://en.bitcoin.it/wiki/BIP_0013: Address Format for pay-to-script-hash
+     */
+    public boolean isP2SHAddress() {
+        return this.version == getParameters().p2shHeader;
+    }
+
+    /** Returns an Address that represents the given P2SH script hash. */
+    public static Address fromP2SHHash(NetworkParameters params, byte[] hash160) {
+        return new Address(params, params.getP2SHHeader(), hash160);
+    }
+
+    /** Returns an Address that represents the script hash extracted from the given scriptPubKey */
+    public static Address fromP2SHScript(NetworkParameters params, Script scriptPubKey) throws ScriptException {
+        checkArgument(scriptPubKey.isPayToScriptHash(), "Not a P2SH script");
+        return fromP2SHHash(params, scriptPubKey.getPubKeyHash());
     }
 
     /**
@@ -92,10 +117,8 @@ public class Address extends VersionedChecksummedBytes {
         // TODO: There should be a more generic way to get all supported networks.
         NetworkParameters[] networks = { MainNetParams.get() };
         for (NetworkParameters params : networks) {
-            for (int code : params.getAcceptableAddressCodes()) {
-                if (code == version) {
-                    return params;
-                }
+            if (isAcceptableVersion(params, version)) {
+                return params;
             }
         }
         return null;
@@ -113,5 +136,17 @@ public class Address extends VersionedChecksummedBytes {
             // Cannot happen.
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Check if a given address version is valid given the NetworkParameters.
+     */
+    private boolean isAcceptableVersion(NetworkParameters params, int version) {
+        for (int v : params.getAcceptableAddressCodes()) {
+            if (version == v) {
+                return true;
+            }
+        }
+        return false;
     }
 }
