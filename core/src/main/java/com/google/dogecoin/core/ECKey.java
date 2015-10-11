@@ -66,15 +66,15 @@ import static com.google.common.base.Preconditions.checkArgument;
 public class ECKey implements Serializable {
     private static final Logger log = LoggerFactory.getLogger(ECKey.class);
 
-    private static final ECDomainParameters ecParams;
-
     private static final SecureRandom secureRandom;
     private static final long serialVersionUID = -728224901792295832L;
 
     static {
         // All clients must agree on the curve to use by agreement. Bitcoin uses secp256k1.
         X9ECParameters params = SECNamedCurves.getByName("secp256k1");
-        ecParams = new ECDomainParameters(params.getCurve(), params.getG(), params.getN(), params.getH());
+        CURVE = new ECDomainParameters(params.getCurve(), params.getG(), params.getN(), params.getH());
+
+        HALF_CURVE_ORDER = params.getN().shiftRight(1);
         secureRandom = new SecureRandom();
     }
 
@@ -100,13 +100,22 @@ public class ECKey implements Serializable {
     // Transient because it's calculated on demand.
     transient private byte[] pubKeyHash;
 
+    /** The parameters of the secp256k1 curve that Bitcoin uses. */
+    public static final ECDomainParameters CURVE;
+
+    /**
+     * Equal to CURVE.getN().shiftRight(1), used for canonicalising the S value of a signature. If you aren't
+     * sure what this is about, you can ignore it.
+     */
+    public static final BigInteger HALF_CURVE_ORDER;
+
     /**
      * Generates an entirely new keypair. Point compression is used so the resulting public key will be 33 bytes
      * (32 for the co-ordinate and 1 byte to represent the y bit).
      */
     public ECKey() {
         ECKeyPairGenerator generator = new ECKeyPairGenerator();
-        ECKeyGenerationParameters keygenParams = new ECKeyGenerationParameters(ecParams, secureRandom);
+        ECKeyGenerationParameters keygenParams = new ECKeyGenerationParameters(CURVE, secureRandom);
         generator.init(keygenParams);
         AsymmetricCipherKeyPair keypair = generator.generateKeyPair();
         ECPrivateKeyParameters privParams = (ECPrivateKeyParameters) keypair.getPrivate();
@@ -122,7 +131,7 @@ public class ECKey implements Serializable {
     }
 
     private static ECPoint compressPoint(ECPoint uncompressed) {
-        return new ECPoint.Fp(ecParams.getCurve(), uncompressed.getX(), uncompressed.getY(), true);
+        return new ECPoint.Fp(CURVE.getCurve(), uncompressed.getX(), uncompressed.getY(), true);
     }
 
     /**
@@ -228,7 +237,7 @@ public class ECKey implements Serializable {
      * new BigInteger(1, bytes);</tt>
      */
     public static byte[] publicKeyFromPrivate(BigInteger privKey, boolean compressed) {
-        ECPoint point = ecParams.getG().multiply(privKey);
+        ECPoint point = CURVE.getG().multiply(privKey);
         if (compressed)
             point = compressPoint(point);
         return point.getEncoded();
@@ -312,10 +321,38 @@ public class ECKey implements Serializable {
         /** The two components of the signature. */
         public BigInteger r, s;
 
-        /** Constructs a signature with the given components. */
+        /** Constructs a signature with the given components. Does NOT automatically canonicalise the signature. */
         public ECDSASignature(BigInteger r, BigInteger s) {
             this.r = r;
             this.s = s;
+        }
+
+        /**
+         * Returns true if the S component is "low", that means it is below {@link ECKey#HALF_CURVE_ORDER}. See <a
+         * href="https://github.com/bitcoin/bips/blob/master/bip-0062.mediawiki#Low_S_values_in_signatures">BIP62</a>.
+         */
+        public boolean isCanonical() {
+            return s.compareTo(HALF_CURVE_ORDER) <= 0;
+        }
+
+        /**
+         * Will automatically adjust the S component to be less than or equal to half the curve order, if necessary.
+         * This is required because for every signature (r,s) the signature (r, -s (mod N)) is a valid signature of
+         * the same message. However, we dislike the ability to modify the bits of a Bitcoin transaction after it's
+         * been signed, as that violates various assumed invariants. Thus in future only one of those forms will be
+         * considered legal and the other will be banned.
+         */
+        public ECDSASignature toCanonicalised() {
+            if (!isCanonical()) {
+                // The order of the curve is the number of valid points that exist on that curve. If S is in the upper
+                // half of the number of valid points, then bring it back to the lower half. Otherwise, imagine that
+                //    N = 10
+                //    s = 8, so (-8 % 10 == 2) thus both (r, 8) and (r, 2) are valid solutions.
+                //    10 - 8 == 2, giving us always the latter solution, which is canonical.
+                return new ECDSASignature(r, CURVE.getN().subtract(s));
+            } else {
+                return this;
+            }
         }
 
         /**
@@ -410,10 +447,10 @@ public class ECKey implements Serializable {
         }
 
         ECDSASigner signer = new ECDSASigner();
-        ECPrivateKeyParameters privKey = new ECPrivateKeyParameters(privateKeyForSigning, ecParams);
+        ECPrivateKeyParameters privKey = new ECPrivateKeyParameters(privateKeyForSigning, CURVE);
         signer.init(true, privKey);
         BigInteger[] sigs = signer.generateSignature(input.getBytes());
-        return new ECDSASignature(sigs[0], sigs[1]);
+        return new ECDSASignature(sigs[0], sigs[1]).toCanonicalised();
     }
 
     /**
@@ -431,7 +468,7 @@ public class ECKey implements Serializable {
             return NativeSecp256k1.verify(data, signature.encodeToDER(), pub);
 
         ECDSASigner signer = new ECDSASigner();
-        ECPublicKeyParameters params = new ECPublicKeyParameters(ecParams.getCurve().decodePoint(pub), ecParams);
+        ECPublicKeyParameters params = new ECPublicKeyParameters(CURVE.getCurve().decodePoint(pub), CURVE);
         signer.init(false, params);
         try {
             return signer.verifySignature(data, signature.r, signature.s);
@@ -652,7 +689,7 @@ public class ECKey implements Serializable {
         Preconditions.checkNotNull(message);
         // 1.0 For j from 0 to h   (h == recId here and the loop is outside this function)
         //   1.1 Let x = r + jn
-        BigInteger n = ecParams.getN();  // Curve order.
+        BigInteger n = CURVE.getN();  // Curve order.
         BigInteger i = BigInteger.valueOf((long) recId / 2);
         BigInteger x = sig.r.add(i.multiply(n));
         //   1.2. Convert the integer x to an octet string X of length mlen using the conversion routine
@@ -662,7 +699,7 @@ public class ECKey implements Serializable {
         //        do another iteration of Step 1.
         //
         // More concisely, what these points mean is to use X as a compressed public key.
-        ECCurve.Fp curve = (ECCurve.Fp) ecParams.getCurve();
+        ECCurve.Fp curve = (ECCurve.Fp) CURVE.getCurve();
         BigInteger prime = curve.getQ();  // Bouncy Castle is not consistent about the letter it uses for the prime.
         if (x.compareTo(prime) >= 0) {
             // Cannot have point co-ordinates larger than this as everything takes place modulo Q.
@@ -691,7 +728,7 @@ public class ECKey implements Serializable {
         BigInteger rInv = sig.r.modInverse(n);
         BigInteger srInv = rInv.multiply(sig.s).mod(n);
         BigInteger eInvrInv = rInv.multiply(eInv).mod(n);
-        ECPoint p1 = ecParams.getG().multiply(eInvrInv);
+        ECPoint p1 = CURVE.getG().multiply(eInvrInv);
         ECPoint p2 = R.multiply(srInv);
         ECPoint.Fp q = (ECPoint.Fp) p2.add(p1);
         if (compressed) {
@@ -704,7 +741,7 @@ public class ECKey implements Serializable {
     /** Decompress a compressed public key (x co-ord and low-bit of y-coord). */
     private static ECPoint decompressKey(BigInteger xBN, boolean yBit) {
         // This code is adapted from Bouncy Castle ECCurve.Fp.decodePoint(), but it wasn't easily re-used.
-        ECCurve.Fp curve = (ECCurve.Fp) ecParams.getCurve();
+        ECCurve.Fp curve = (ECCurve.Fp) CURVE.getCurve();
         ECFieldElement x = new ECFieldElement.Fp(curve.getQ(), xBN);
         ECFieldElement alpha = x.multiply(x.square().add(curve.getA())).add(curve.getB());
         ECFieldElement beta = alpha.sqrt();
