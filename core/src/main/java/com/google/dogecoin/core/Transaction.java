@@ -1238,7 +1238,7 @@ public class Transaction extends ChildMessage implements Serializable, IsMultiBi
      * </p>
      */
     public boolean isTimeLocked() {
-        if (getLockTime() == 0)
+        if (getLockTime() <= LOCKTIME_THRESHOLD) // dogecoin hack to accept block-locked txns
             return false;
         for (TransactionInput input : getInputs())
             if (input.hasSequence())
