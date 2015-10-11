@@ -65,9 +65,9 @@ public class MainNetParams extends NetworkParameters {
 
         dnsSeeds = new String[] {
                 "seed.dogecoin.com",
-                "seed.mophides.com",
-                "seed.dglibrary.org",
-                "seed.dogechain.info",
+                "seed.multidoge.org",
+                "seed2.multidoge.org",
+                "seed.doger.dogecoin.com",
         };
     }
 
