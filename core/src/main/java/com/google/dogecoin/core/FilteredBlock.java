@@ -53,7 +53,7 @@ public class FilteredBlock extends Message {
         System.arraycopy(bytes, 0, headerBytes, 0, Block.HEADER_SIZE);
 
 
-        if (blockVersion == Block.BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+        if (Block.isAuxBlock(blockVersion)) {
             AuxPoWMessage auxPoWMessage = new AuxPoWMessage(bytes, cursor + Block.HEADER_SIZE);
             auxPoWMessage.parse();
             this.cursor = auxPoWMessage.cursor;

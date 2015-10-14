@@ -225,7 +225,7 @@ public class Block extends Message {
         if (transactionsParsed)
             return;
 
-        if (version != BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+        if (!Block.isAuxBlock(version)) {
             cursor = offset + HEADER_SIZE;
         }
 
@@ -256,7 +256,7 @@ public class Block extends Message {
 
     void parse() throws ProtocolException {
         parseHeader();
-        if (version == BLOCK_VERSION_AUXPOW_AUXBLOCK && bytes.length >= 160) { // We have at least 2 headers in an Aux block. Workaround for StoredBlocks
+        if (Block.isAuxBlock(version) && bytes.length >= 160) { // We have at least 2 headers in an Aux block. Workaround for StoredBlocks
             parseAuxData();
         }
         parseTransactions();
@@ -611,7 +611,7 @@ public class Block extends Message {
         block.difficultyTarget = difficultyTarget;
         block.transactions = null;
         block.hash = getHash().duplicate();
-        if (version == BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+        if (Block.isAuxBlock(version)) {
             block.parentBlock = parentBlock;
         }
         return block;
@@ -700,7 +700,7 @@ public class Block extends Message {
         BigInteger target = getDifficultyTargetAsInteger();
 
         BigInteger h;
-        if (this.version == BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+        if (Block.isAuxBlock(version)) {
             h = this.parentBlock.getScryptHash().toBigInteger();
         } else {
             h  = getScryptHash().toBigInteger();
@@ -1116,6 +1116,13 @@ public class Block extends Message {
      */
     Block createNextBlockWithCoinbase(byte[] pubKey) {
         return createNextBlock(null, null, Utils.now().getTime() / 1000, pubKey, Utils.toNanoCoins(50, 0));
+    }
+
+    public static boolean isAuxBlock(long version) {
+        int minauxversion = 0x02;
+        int isauxpow = 0x6201 ;
+        int versionmask = 0xff;
+        return (version >> 8) == isauxpow && (version & versionmask) >= minauxversion;
     }
 
     /**

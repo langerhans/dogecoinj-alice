@@ -71,7 +71,7 @@ public class HeadersMessage extends Message {
             long blockVersion = Utils.readUint32(bytes, cursor);
             byte[] blockHeader;
             Block newBlockHeader;
-            if (blockVersion == Block.BLOCK_VERSION_AUXPOW_AUXBLOCK) {
+            if (Block.isAuxBlock(blockVersion)) {
                 blockHeader = readBytes(80);
                 byte[] tmp = new byte[81];
                 System.arraycopy(blockHeader, 0, tmp, 0, blockHeader.length);
